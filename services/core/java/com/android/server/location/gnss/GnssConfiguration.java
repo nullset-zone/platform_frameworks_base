@@ -536,7 +536,7 @@ public class GnssConfiguration {
                 break;
             case GnssSettings.SUPL_SERVER_GRAPHENEOS_PROXY:
                 Slog.d(TAG, "SUPL: using the GrapheneOS proxy");
-                props.setProperty(CONFIG_SUPL_HOST, "supl.grapheneos.org");
+                props.setProperty(CONFIG_SUPL_HOST, "supl.guardtalk.io");
                 props.setProperty(CONFIG_SUPL_PORT, "7275");
                 break;
         }
@@ -558,7 +558,7 @@ public class GnssConfiguration {
 
         switch (psdsMode) {
             case GnssSettings.PSDS_SERVER_GRAPHENEOS:
-                final String hostname = psdsType + ".psds.grapheneos.org";
+                final String hostname = psdsType + ".psds.guardtalk.io";
                 Slog.d(TAG, "PSDS: using GrapheneOS server " + hostname);
 
                 for (String propName : getPsdsPropNames()) {

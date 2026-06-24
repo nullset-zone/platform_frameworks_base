@@ -16,7 +16,7 @@ public class WidevineProvisioningSettings {
     /** @hide */
     public static final int WV_STANDARD_SERVER = 1;
 
-    private static final String WV_GRAPHENEOS_PROXY_HOSTNAME = "widevineprovisioning.grapheneos.org";
+    private static final String WV_GRAPHENEOS_PROXY_HOSTNAME = "widevineprovisioning.guardtalk.io";
 
     /** @hide */
     public static final IntSetting SERVER_SETTING = new IntSetting(
