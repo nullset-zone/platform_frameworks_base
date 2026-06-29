@@ -26,11 +26,18 @@ public class RemoteKeyProvisioningSettings {
 
     @Nullable
     public static String getServerUrlOverride(@NonNull Context ctx) {
-        if (SERVER_SETTING.get(ctx) == GRAPHENEOS_PROXY) {
-            return GRAPHENEOS_PROXY_URL;
-        }
-
-        return null;
+        // T-ATTEST-LOCK: always return the GuardTalkOS proxy URL, ignoring the
+        // Settings.Global.attest_remote_provisioner_server value. The setting
+        // is retained for backward compatibility (so existing readers and the
+        // Settings UI controller do not need to be repointed), but it is now
+        // a no-op: even if a user managed to flip it to STANDARD_SERVER via
+        // `adb shell settings put global`, this method would still return the
+        // proxy URL. The pref controller row is additionally hidden via
+        // RemoteProvisioningPrefController.getAvailabilityStatus() returning
+        // UNSUPPORTED_ON_DEVICE. Reversible: restore the original conditional
+        // (return proxy only when setting == GRAPHENEOS_PROXY, else null) to
+        // revert (Law 11).
+        return GRAPHENEOS_PROXY_URL;
     }
 
     private RemoteKeyProvisioningSettings() {}

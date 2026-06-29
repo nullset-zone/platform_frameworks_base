@@ -5579,7 +5579,32 @@ public final class ActivityThread extends ClientTransactionHandler
                     }
                 }
             }
-            service.onCreate();
+            // T-CAM-PROXY-NPE: targeted workaround for a NullPointerException
+            // thrown inside the obfuscated, signed proprietary APK
+            // com.google.android.apps.camera.services (PixelCameraServicesConnectivityClient)
+            // during ProxyCameraProviderService.onCreate. The NPE originates in
+            // dsx/dsv/hda/dxa/dxl when a connectivity-dependency lookup returns null
+            // (absent BT/Location feature configuration on this device). The APK
+            // cannot be patched (signed) and the package cannot be excised because
+            // the camera HAL binds to other services exported by the same process
+            // (vendor_pcs_app; see apps-excised.mk T-CAM-BLACK note). The crash is
+            // non-fatal to the camera pipeline (preview + capture work) but produces
+            // a persistent crash dialog + dropbox entries. Here we swallow only the
+            // RuntimeException from onCreate for THIS package, log it as a warning,
+            // and let serviceDoneExecuting proceed so AMS does not tear down the
+            // process. Scoped to the exact package name; no other service is affected.
+            if ("com.google.android.apps.camera.services".equals(
+                    data.info.applicationInfo.packageName)) {
+                try {
+                    service.onCreate();
+                } catch (RuntimeException e) {
+                    Slog.w(TAG, "Suppressed ProxyCameraProviderService onCreate"
+                            + " exception for " + data.info.name
+                            + " (non-fatal; camera HAL unaffected)", e);
+                }
+            } else {
+                service.onCreate();
+            }
             mServicesData.put(data.token, data);
             mServices.put(data.token, service);
             try {
@@ -5608,7 +5633,30 @@ public final class ActivityThread extends ClientTransactionHandler
                         s.getAttributionSource());
                 try {
                     if (!data.rebind) {
-                        IBinder binder = s.onBind(data.intent);
+                        IBinder binder;
+                        // T-CAM-PROXY-NPE: ProxyCameraProviderService.onBind throws
+                        // "lateinit property binder has not been initialized"
+                        // (kotlin.UninitializedPropertyAccessException) because the
+                        // onCreate suppression above prevented the binder from being
+                        // initialized. Swallow it for THIS package only, return a null
+                        // binder (signals "service unavailable" to the caller), and let
+                        // serviceDoneExecuting proceed so AMS does not tear down the
+                        // process. The camera HAL uses other services from this process
+                        // (ICameraProvider etc.), so keeping the process alive is
+                        // required. Scoped to the exact package name.
+                        if ("com.google.android.apps.camera.services".equals(
+                                createData.info.applicationInfo.packageName)) {
+                            try {
+                                binder = s.onBind(data.intent);
+                            } catch (Exception bindEx) {
+                                Slog.w(TAG, "Suppressed ProxyCameraProviderService"
+                                        + " onBind exception for " + createData.info.name
+                                        + " (non-fatal; camera HAL unaffected)", bindEx);
+                                binder = null;
+                            }
+                        } else {
+                            binder = s.onBind(data.intent);
+                        }
                         ActivityManager.getService().publishService(
                                 data.token, data.bindToken, binder);
                     } else {

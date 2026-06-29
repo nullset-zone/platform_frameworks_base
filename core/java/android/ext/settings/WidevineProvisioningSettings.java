@@ -27,10 +27,18 @@ public class WidevineProvisioningSettings {
 
     @Nullable
     public static String getServerHostnameOverride(@NonNull Context ctx) {
-        if (SERVER_SETTING.get(ctx) == WV_GRAPHENEOS_PROXY) {
-            return WV_GRAPHENEOS_PROXY_HOSTNAME;
-        }
-        return null;
+        // T-WIDEVINE-LOCK: always return the GuardTalkOS proxy hostname,
+        // ignoring the Settings.Global.widevine_provisioner_server value. The
+        // setting is retained for backward compatibility (existing readers and
+        // the Settings UI controller do not need to be repointed), but it is
+        // now a no-op: even if a user managed to flip it to WV_STANDARD_SERVER
+        // via `adb shell settings put global`, this method would still return
+        // the proxy hostname. The pref controller row is additionally hidden
+        // via WidevineProvisioningPrefController.getAvailabilityStatus()
+        // returning UNSUPPORTED_ON_DEVICE. Reversible: restore the original
+        // conditional (return proxy only when setting ==
+        // WV_GRAPHENEOS_PROXY, else null) to revert (Law 11).
+        return WV_GRAPHENEOS_PROXY_HOSTNAME;
     }
 
     private WidevineProvisioningSettings() {}
