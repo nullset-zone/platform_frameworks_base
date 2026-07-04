@@ -21,7 +21,10 @@ import android.util.Log;
 import android.util.Slog;
 
 import com.android.internal.R;
+import com.android.server.LocalServices;
 import com.android.server.ext.SystemErrorNotification;
+import com.android.server.locksettings.DuressWipe;
+import com.android.server.locksettings.LockSettingsInternal;
 import com.android.server.utils.Slogf;
 
 import java.util.ArrayList;
@@ -125,6 +128,12 @@ public class UsbPortSecurityHooks {
                         }
                     }
                 }
+
+                // USB data-cable duress watchdog: trigger recoverable crypto-erase when an
+                // external host connects via a data cable while the device is locked,
+                // duress-armed and verified-boot-green. See vendor/guardtalk/docs/
+                // SECURITY_USB_WATCHDOG_REPORT.md for the full MVP policy matrix.
+                maybeTriggerUsbDuressWipe(portStatus);
             }
         };
         var filter = new IntentFilter(UsbManager.ACTION_USB_PORT_CHANGED);
@@ -411,5 +420,119 @@ public class UsbPortSecurityHooks {
             }
         }
         return false;
+    }
+
+    // Feature flag for the USB duress wipe watchdog (default: disabled, opt-in via prop).
+    // Allows remote A/B disabling of the feature without a rebuild.
+    private static final String USB_DURESS_WIPE_ENABLED_PROP =
+            "vendor.guardtalk.usb_duress_wipe.enabled";
+
+    /**
+     * USB data-cable duress watchdog. Triggers {@link DuressWipe#run} (recoverable
+     * crypto-erase via {@code RecoverySystemService.deleteSecrets()} + lowLevelShutdown)
+     * only when ALL of the following are true:
+     *   1. {@code vendor.guardtalk.usb_duress_wipe.enabled} == 1 (feature flag, opt-in)
+     *   2. {@link #keyguardDismissedAtLeastOnce} (avoid firing during first-boot flow)
+     *   3. keyguard currently showing (device locked)
+     *   4. port is connected AND {@code data_role == DATA_ROLE_DEVICE}
+     *      (an external host is connected over a data cable; HOST = phone is OTG host,
+     *       NONE = charge-only cable — neither triggers the wipe)
+     *   5. duress credentials are provisioned (DuressCredentials.maybeGet() != null)
+     *   6. {@code ro.boot.verifiedbootstate == "green"} (production-locked device only)
+     *
+     * <p>The wipe is RECOVERABLE-BY-REFLASH: {@code DuressWipe} destroys the KeyMint
+     * storage-encryption keys (making FBE data unrecoverable on this device) and then
+     * shuts down. It does NOT issue a permanent hardware brick — reflash and the device
+     * boots again with empty storage. See
+     * vendor/guardtalk/docs/SECURITY_USB_WATCHDOG_REPORT.md for the threat model.
+     */
+    private void maybeTriggerUsbDuressWipe(UsbPortStatus portStatus) {
+        if (portStatus == null) {
+            return;
+        }
+
+        // Condition 1: feature flag must be explicitly enabled (default disabled).
+        if (!isUsbDuressWipeEnabled()) {
+            return;
+        }
+
+        // Condition 2: keyguard must have been dismissed at least once (avoid first-boot
+        // false triggers before the user has set up / unlocked for the first time).
+        if (!keyguardDismissedAtLeastOnce) {
+            return;
+        }
+
+        // Condition 3: keyguard must be currently showing (device is locked).
+        if (prevKeyguardShowing == null || !prevKeyguardShowing.booleanValue()) {
+            return;
+        }
+
+        // Condition 4: a data cable must be connected with the phone in DEVICE role,
+        // i.e. an external host is talking to us. NONE (charge-only) and HOST (phone
+        // is the OTG host) both intentionally do NOT trigger — neither is the threat
+        // model (adversary plugging in a hostile host to extract data).
+        if (!portStatus.isConnected()) {
+            return;
+        }
+        if (portStatus.getCurrentDataRole() != UsbPortStatus.DATA_ROLE_DEVICE) {
+            return;
+        }
+
+        // Condition 5: duress credentials must be provisioned.
+        if (!isDuressArmed()) {
+            return;
+        }
+
+        // Condition 6: verified boot must be green — only enforce on a production-locked
+        // device. On an unlocked bootloader an attacker controls the boot chain, so
+        // triggering a wipe would be pointless self-DoS.
+        if (!isVerifiedBootGreen()) {
+            return;
+        }
+
+        // All conditions met — trigger recoverable crypto-erase. This log line MUST
+        // land in pstore/last_kmsg before the low-level shutdown that DuressWipe
+        // performs, so it is available for post-incident forensic analysis.
+        Slog.w(TAG, "USB duress wipe triggered: dataRole=DEVICE, locked=true, "
+                + "duressArmed=true, vbootState=green");
+
+        DuressWipe.run(context);
+    }
+
+    private static boolean isUsbDuressWipeEnabled() {
+        // Default to disabled ("0" / unset) so the feature is opt-in.
+        return "1".equals(SystemProperties.get(USB_DURESS_WIPE_ENABLED_PROP, "0"));
+    }
+
+    /**
+     * Queries whether duress credentials are provisioned. Crosses the
+     * {@code policy.keyguard} → {@code locksettings} package boundary via the
+     * {@link LockSettingsInternal} LocalService registered by LockSettingsService,
+     * which exposes a dedicated non-challenge {@link LockSettingsInternal#isDuressArmed}
+     * accessor (the existing {@code DuressPasswordHelper.hasDuressCredentials}
+     * requires the owner credential, which we don't have here). The accessor reads the
+     * persisted {@code "duress_credentials"} row via
+     * {@link DuressCredentials#maybeGet}, matching the wipe path in
+     * {@code DuressPasswordHelper.maybePerformDuressWipe}.
+     */
+    private boolean isDuressArmed() {
+        try {
+            LockSettingsInternal lsi = LocalServices.getService(LockSettingsInternal.class);
+            if (lsi == null) {
+                return false;
+            }
+            return lsi.isDuressArmed();
+        } catch (Throwable t) {
+            // Any failure querying the duress state MUST fail-safe to "not armed" rather
+            // than risk a false-trigger wipe. The cost of a missed wipe (which only
+            // matters if duress was actually armed AND the LocalService is up) is far
+            // lower than the cost of a false-trigger wipe of a non-duress device.
+            Slog.e(TAG, "isDuressArmed: failed to query duress state, failing safe", t);
+            return false;
+        }
+    }
+
+    private static boolean isVerifiedBootGreen() {
+        return "green".equals(SystemProperties.get("ro.boot.verifiedbootstate", ""));
     }
 }

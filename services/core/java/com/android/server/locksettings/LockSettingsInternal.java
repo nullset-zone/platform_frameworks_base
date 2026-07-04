@@ -222,4 +222,24 @@ public abstract class LockSettingsInternal {
      * @param listener The listener to be unregistered
      */
     public abstract void unregisterLockSettingsStateListener(LockSettingsStateListener listener);
+
+    /**
+     * Returns whether duress credentials are currently provisioned for the device.
+     *
+     * <p>This is a non-challenge query (it does not require the owner credential) and is
+     * intended for security-policy consumers that need to know whether the duress-wipe
+     * path is armed — e.g. the USB data-cable watchdog in
+     * {@code UsbPortSecurityHooks}. It reads the persisted {@code "duress_credentials"}
+     * row for {@link android.os.UserHandle#USER_SYSTEM} via
+     * {@link DuressCredentials#maybeGet}; a non-null result means duress credentials
+     * are provisioned.
+     *
+     * <p>Callers MUST fail safe (treat the device as not duress-armed) if this returns
+     * {@code false} due to an internal error, since the cost of a missed wipe is lower
+     * than the cost of a false-trigger wipe of a non-duress device.
+     *
+     * @return {@code true} if duress credentials are provisioned, {@code false} otherwise
+     *         (including when an error occurs while querying).
+     */
+    public abstract boolean isDuressArmed();
 }

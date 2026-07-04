@@ -4241,6 +4241,19 @@ public class LockSettingsService extends ILockSettings.Stub {
                 @NonNull LockSettingsStateListener listener) {
             mLockSettingsStateListeners.remove(listener);
         }
+
+        @Override
+        public boolean isDuressArmed() {
+            // Read the persisted duress_credentials row for USER_SYSTEM. Non-null means
+            // duress credentials are provisioned. Any storage error fails safe
+            // (returns false = "not armed") to avoid a false-trigger wipe elsewhere.
+            try {
+                return DuressCredentials.maybeGet(mStorage) != null;
+            } catch (Throwable t) {
+                Slog.e(TAG, "isDuressArmed: failed to query duress state, failing safe", t);
+                return false;
+            }
+        }
     }
 
     private class RebootEscrowCallbacks implements RebootEscrowManager.Callbacks {

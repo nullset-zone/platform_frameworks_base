@@ -16,7 +16,7 @@ public class DuressWipe {
     // used only for testing, guarded by owner credential
     public static boolean sleep5sBeforePoweroff;
 
-    static void run(Context context) {
+    public static void run(Context context) {
         Slog.d(TAG, "start");
 
         EuiccWipeThread euiccWipeThread = EuiccWipeThread.start(context);
