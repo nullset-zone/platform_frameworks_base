@@ -188,5 +188,9 @@ public class PackageManagerHooks {
 
     // Packages in this array are restricted from interacting with and being interacted by non-system apps
     private static final ArraySet<String> restrictedVisibilityPackages = new ArraySet<>(new String[] {
+            // T-SEC-P1-CONTACTS: hide Contacts UI package from non-system package
+            // queries. ContactsProvider stays queryable so Messenger / system
+            // contact APIs keep working. Package remains installed (UI hide only).
+            "com.android.contacts",
     });
 }

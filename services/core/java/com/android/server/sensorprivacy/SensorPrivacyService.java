@@ -203,6 +203,9 @@ public final class SensorPrivacyService extends SystemService {
 
     private int mCurrentUser = USER_NULL;
 
+    /** GuardTalk T-SEC-P2-SENSOR: locked/pre-unlock/lockdown fail-closed hooks. */
+    private GuardTalkSensorPrivacyHooks mGuardTalkHooks;
+
     public SensorPrivacyService(Context context) {
         super(context);
 
@@ -237,6 +240,11 @@ public final class SensorPrivacyService extends SystemService {
             mKeyguardManager = mContext.getSystemService(KeyguardManager.class);
             mCallStateHelper = new CallStateHelper();
             mSensorPrivacyServiceImpl.registerSettingsObserver();
+            if (mGuardTalkHooks != null) {
+                mGuardTalkHooks.setCurrentUser(mCurrentUser == USER_NULL
+                        ? UserHandle.USER_SYSTEM : mCurrentUser);
+                mGuardTalkHooks.register(mKeyguardManager);
+            }
         } else if (phase == PHASE_ACTIVITY_MANAGER_READY) {
             mCameraPrivacyLightController = new CameraPrivacyLightController(mContext);
         }
@@ -307,6 +315,8 @@ public final class SensorPrivacyService extends SystemService {
         SensorPrivacyServiceImpl() {
             mHandler = new SensorPrivacyHandler(FgThread.get().getLooper(), mContext);
             mSensorPrivacyStateController = SensorPrivacyStateController.getInstance();
+            mGuardTalkHooks = new GuardTalkSensorPrivacyHooks(
+                    mContext, mHandler, this::applyEffectiveRestrictions);
 
             correctStateIfNeeded();
 
@@ -836,6 +846,9 @@ public final class SensorPrivacyService extends SystemService {
             if (!canChangeToggleSensorPrivacy(userId, sensor)) {
                 return;
             }
+            if (mGuardTalkHooks != null && !mGuardTalkHooks.allowToggleChange(userId, enable)) {
+                return;
+            }
             if (enable && !supportsSensorToggle(TOGGLE_TYPE_SOFTWARE, sensor)) {
                 // Do not enable sensor privacy if the device doesn't support it
                 return;
@@ -868,6 +881,11 @@ public final class SensorPrivacyService extends SystemService {
             enforceValidCallingUser(userId);
 
             if (!canChangeToggleSensorPrivacy(userId, sensor)) {
+                return;
+            }
+            // DISABLED = sensors ON; reject while GuardTalk force-deny applies.
+            if (mGuardTalkHooks != null
+                    && !mGuardTalkHooks.allowToggleChange(userId, state != DISABLED)) {
                 return;
             }
             if (!supportsSensorToggle(TOGGLE_TYPE_SOFTWARE, sensor)) {
@@ -1459,7 +1477,9 @@ public final class SensorPrivacyService extends SystemService {
                         micState[swToggleIdx]);
                 mHandler.handleSensorPrivacyChanged(to, TOGGLE_TYPE_HARDWARE, MICROPHONE,
                         micState[hwToggleIdx]);
-                setGlobalRestriction(MICROPHONE, micState[swToggleIdx] || micState[hwToggleIdx]);
+                setGlobalRestriction(MICROPHONE,
+                        effectiveSensorRestriction(to,
+                                micState[swToggleIdx] || micState[hwToggleIdx]));
             }
             if (from == USER_NULL || prevCamState[swToggleIdx] != camState[swToggleIdx]
                     || prevCamState[hwToggleIdx] != camState[hwToggleIdx]) {
@@ -1467,8 +1487,32 @@ public final class SensorPrivacyService extends SystemService {
                         camState[swToggleIdx]);
                 mHandler.handleSensorPrivacyChanged(to, TOGGLE_TYPE_HARDWARE, CAMERA,
                         camState[hwToggleIdx]);
-                setGlobalRestriction(CAMERA, camState[swToggleIdx] || camState[hwToggleIdx]);
+                setGlobalRestriction(CAMERA,
+                        effectiveSensorRestriction(to,
+                                camState[swToggleIdx] || camState[hwToggleIdx]));
             }
+            if (mGuardTalkHooks != null) {
+                mGuardTalkHooks.setCurrentUser(to);
+            }
+        }
+
+        /**
+         * GuardTalk: OR toggle restriction with locked/pre-unlock/lockdown force-deny.
+         */
+        private boolean effectiveSensorRestriction(int userId, boolean toggleEnabled) {
+            if (mGuardTalkHooks == null) {
+                return toggleEnabled;
+            }
+            return mGuardTalkHooks.effectiveRestriction(userId, toggleEnabled);
+        }
+
+        /** Re-apply mic/camera AppOps from toggle state + GuardTalk force-deny. */
+        private void applyEffectiveRestrictions() {
+            final int userId = mCurrentUser == USER_NULL ? UserHandle.USER_SYSTEM : mCurrentUser;
+            setGlobalRestriction(MICROPHONE, effectiveSensorRestriction(userId,
+                    isCombinedToggleSensorPrivacyEnabled(MICROPHONE)));
+            setGlobalRestriction(CAMERA, effectiveSensorRestriction(userId,
+                    isCombinedToggleSensorPrivacyEnabled(CAMERA)));
         }
 
         private void setGlobalRestriction(int sensor, boolean enabled) {
@@ -1539,8 +1583,10 @@ public final class SensorPrivacyService extends SystemService {
                     false, new ContentObserver(mHandler) {
                         @Override
                         public void onChange(boolean selfChange) {
-                            setGlobalRestriction(MICROPHONE,
-                                    isCombinedToggleSensorPrivacyEnabled(MICROPHONE));
+                            final int userId = mCurrentUser == USER_NULL
+                                    ? UserHandle.USER_SYSTEM : mCurrentUser;
+                            setGlobalRestriction(MICROPHONE, effectiveSensorRestriction(userId,
+                                    isCombinedToggleSensorPrivacyEnabled(MICROPHONE)));
                         }
                     });
         }
@@ -1808,7 +1854,9 @@ public final class SensorPrivacyService extends SystemService {
 
             if (userId == mCurrentUser) {
                 mSensorPrivacyServiceImpl.setGlobalRestriction(sensor,
-                        mSensorPrivacyServiceImpl.isCombinedToggleSensorPrivacyEnabled(sensor));
+                        mSensorPrivacyServiceImpl.effectiveSensorRestriction(userId,
+                                mSensorPrivacyServiceImpl
+                                        .isCombinedToggleSensorPrivacyEnabled(sensor)));
             }
 
             if (userId != mCurrentUser) {
@@ -1840,7 +1888,9 @@ public final class SensorPrivacyService extends SystemService {
                 int state) {
             if (userId == mCurrentUser) {
                 mSensorPrivacyServiceImpl.setGlobalRestriction(sensor,
-                        mSensorPrivacyServiceImpl.isCombinedToggleSensorPrivacyEnabled(sensor));
+                        mSensorPrivacyServiceImpl.effectiveSensorRestriction(userId,
+                                mSensorPrivacyServiceImpl
+                                        .isCombinedToggleSensorPrivacyEnabled(sensor)));
             }
 
             if (userId != mCurrentUser) {

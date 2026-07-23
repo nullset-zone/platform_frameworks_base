@@ -193,6 +193,7 @@ import com.android.server.lights.LightsService;
 import com.android.server.locales.LocaleManagerService;
 import com.android.server.location.LocationManagerService;
 import com.android.server.location.altitude.AltitudeService;
+import com.android.server.guardtalk.GuardTalkConfigGateService;
 import com.android.server.locksettings.LockSettingsInternal;
 import com.android.server.locksettings.LockSettingsService;
 import com.android.server.logcat.LogcatManagerService;
@@ -2013,6 +2014,15 @@ public final class SystemServer implements Dumpable {
                         ServiceManager.getService("lock_settings"));
             } catch (Throwable e) {
                 reportWtf("starting LockSettingsService service", e);
+            }
+            t.traceEnd();
+
+            // GuardTalkOS: GT Config password gate for Security mutations (T-SEC-P1-GTGATE).
+            t.traceBegin("StartGuardTalkConfigGateService");
+            try {
+                mSystemServiceManager.startService(GuardTalkConfigGateService.class);
+            } catch (Throwable e) {
+                reportWtf("starting GuardTalkConfigGateService", e);
             }
             t.traceEnd();
 

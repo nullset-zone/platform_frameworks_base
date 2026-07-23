@@ -31,6 +31,7 @@ import android.database.Cursor;
 import android.database.MatrixCursor;
 import android.database.MatrixCursor.RowBuilder;
 import android.graphics.Point;
+import android.guardtalk.GuardTalkFilesPolicy;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Bundle;
@@ -376,6 +377,13 @@ public abstract class FileSystemProvider extends DocumentsProvider {
         final File file = getFileForDocId(docId);
         final File visibleFile = getFileForDocId(docId, true);
 
+        // GuardTalkOS T-SEC-P4-FILES: never allow user delete of critical mounts.
+        if (GuardTalkFilesPolicy.isProtectedFile(file)) {
+            Log.w(TAG, "Refusing delete of protected path ("
+                    + GuardTalkFilesPolicy.describeProtection(file.getAbsolutePath()) + ")");
+            throw new SecurityException("Delete blocked: critical partition path");
+        }
+
         final boolean isDirectory = file.isDirectory();
         if (isDirectory) {
             FileUtils.deleteContents(file);
@@ -642,6 +650,13 @@ public abstract class FileSystemProvider extends DocumentsProvider {
             throw new FileNotFoundException("File does not exist for " + documentId);
         }
 
+        // GuardTalkOS T-SEC-P4-FILES: never allow user trash of critical mounts.
+        if (GuardTalkFilesPolicy.isProtectedFile(file)) {
+            Log.w(TAG, "Refusing trash of protected path ("
+                    + GuardTalkFilesPolicy.describeProtection(file.getAbsolutePath()) + ")");
+            throw new SecurityException("Trash blocked: critical partition path");
+        }
+
         String trashedPath = MediaStore.trashFile(getContext().getContentResolver(),
                 file.getPath());
         File trashedFile = new File(trashedPath);
@@ -758,8 +773,10 @@ public abstract class FileSystemProvider extends DocumentsProvider {
         if (flagIndex != -1) {
             final boolean isDir = mimeType.equals(Document.MIME_TYPE_DIR);
             boolean isTrashedFile = isTrashFile(file);
+            // GuardTalkOS T-SEC-P4-FILES: strip delete/trash flags on critical mounts.
+            final boolean guardTalkProtected = GuardTalkFilesPolicy.isProtectedFile(file);
             int flags = 0;
-            if (file.canWrite()) {
+            if (file.canWrite() && !guardTalkProtected) {
                 flags |= Document.FLAG_SUPPORTS_DELETE;
                 if (!isTrashedFile) {
                     flags |= Document.FLAG_SUPPORTS_RENAME;
@@ -774,9 +791,9 @@ public abstract class FileSystemProvider extends DocumentsProvider {
             }
 
             if (enableDocumentsTrashApi()) {
-                if (isTrashFile(file)) {
+                if (isTrashedFile) {
                     flags |= Document.FLAG_SUPPORTS_RESTORE;
-                } else if (isTrashSupported(file)) {
+                } else if (!guardTalkProtected && isTrashSupported(file)) {
                     flags |= Document.FLAG_SUPPORTS_TRASH;
                 }
             }

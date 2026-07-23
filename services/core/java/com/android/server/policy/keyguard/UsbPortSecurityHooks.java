@@ -1,12 +1,15 @@
 package com.android.server.policy.keyguard;
 
 import android.annotation.Nullable;
+import android.app.ActivityManager;
 import android.app.ActivityThread;
+import android.app.KeyguardManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.ext.settings.UsbPortSecurity;
+import android.guardtalk.GuardTalkUsbProtectionPolicy;
 import android.hardware.usb.UsbManager;
 import android.hardware.usb.UsbPort;
 import android.hardware.usb.UsbPortStatus;
@@ -16,6 +19,7 @@ import android.os.HandlerThread;
 import android.os.Process;
 import android.os.SystemProperties;
 import android.os.UserHandle;
+import android.os.UserManager;
 import android.util.ArraySet;
 import android.util.Log;
 import android.util.Slog;
@@ -71,8 +75,14 @@ public class UsbPortSecurityHooks {
             return;
         }
 
-        int initialMode = UsbPortSecurity.MODE_SETTING.get();
-        Slogf.d(TAG, "initial value of persist.security.usb_mode: %d", initialMode);
+        int initialMode = getEffectiveMode();
+        Slogf.d(TAG, "initial value of persist.security.usb_mode (effective): %d", initialMode);
+
+        // GuardTalk fail-closed: boot / pre-first-unlock always charging-only.
+        if (GuardTalkUsbProtectionPolicy.isFailClosedEnabled()) {
+            setSecurityStateForAllPortsInner(ctx, PortSecurityState.CHARGING_ONLY_IMMEDIATE);
+            return;
+        }
 
         switch (initialMode) {
             case UsbPortSecurity.MODE_CHARGING_ONLY:
@@ -84,6 +94,58 @@ public class UsbPortSecurityHooks {
                 setSecurityStateForAllPortsInner(ctx, PortSecurityState.PORTS_ENABLED);
                 break;
         }
+    }
+
+    /**
+     * Effective USB port-security mode after GuardTalk fail-closed clamping.
+     * AFU / all-ports-enabled are reduced to charging-only-when-locked.
+     */
+    public static int getEffectiveMode() {
+        return GuardTalkUsbProtectionPolicy.clampPortSecurityMode(
+                UsbPortSecurity.MODE_SETTING.get());
+    }
+
+    /**
+     * GuardTalk + GrapheneOS: true when USB data functions (ADB/MTP/PTP/APK-over-USB)
+     * must be blocked. Fail-closed when GuardTalk policy is on and the device is
+     * locked or CE has not been unlocked yet. Used by {@code UsbDeviceManager}.
+     */
+    public static boolean mustDenyUsbDataFunctions(Context ctx) {
+        if (!GuardTalkUsbProtectionPolicy.isFailClosedEnabled()) {
+            return false;
+        }
+        if (ctx == null) {
+            return true;
+        }
+        try {
+            final int userId = ActivityManager.getCurrentUser();
+            final KeyguardManager km = ctx.getSystemService(KeyguardManager.class);
+            final UserManager um = ctx.getSystemService(UserManager.class);
+            final boolean deviceLocked = km == null || km.isDeviceLocked(userId);
+            final boolean userUnlocked = um != null && um.isUserUnlocked(userId);
+            return GuardTalkUsbProtectionPolicy.mustDenyUsbData(deviceLocked, userUnlocked);
+        } catch (Throwable t) {
+            // Policy on + query failure ⇒ deny (fail-closed).
+            Slog.e(TAG, "mustDenyUsbDataFunctions: failing closed", t);
+            return true;
+        }
+    }
+
+    /**
+     * Strip ADB/MTP/PTP from a gadget function mask when GuardTalk denies USB data.
+     *
+     * @return sanitized functions (typically {@link UsbManager#FUNCTION_NONE})
+     */
+    public static long sanitizeUsbFunctions(Context ctx, long functions) {
+        if (!mustDenyUsbDataFunctions(ctx)) {
+            return functions;
+        }
+        long sanitized = GuardTalkUsbProtectionPolicy.stripBlockedDataFunctions(functions);
+        if (sanitized != functions) {
+            Slog.d(TAG, "sanitizeUsbFunctions: stripped data functions "
+                    + Long.toHexString(functions) + " -> " + Long.toHexString(sanitized));
+        }
+        return sanitized;
     }
 
     public static void init(Context ctx) {
@@ -102,6 +164,7 @@ public class UsbPortSecurityHooks {
             pendingCallbacks.clear();
         }
         i.registerPortChangeReceiver();
+        i.registerUserUnlockedReceiver();
     }
 
     void registerPortChangeReceiver() {
@@ -116,7 +179,7 @@ public class UsbPortSecurityHooks {
                     Slog.d(TAG, "usbConnectEventCount: " + usbConnectEventCount);
                 } else {
                     if (keyguardDismissedAtLeastOnce && prevKeyguardShowing != null && prevKeyguardShowing.booleanValue()) {
-                        int setting = UsbPortSecurity.MODE_SETTING.get();
+                        int setting = getEffectiveMode();
                         if (setting == UsbPortSecurity.MODE_CHARGING_ONLY_WHEN_LOCKED_AFU || setting == UsbPortSecurity.MODE_CHARGING_ONLY_WHEN_LOCKED) {
                             if (!isAnyUsbPortConnected()) {
                                 Slog.d(TAG, "keyguard is showing and there's no longer any connected USB devices, issuing the CHARGING_ONLY_IMMEDIATE command");
@@ -138,6 +201,42 @@ public class UsbPortSecurityHooks {
         };
         var filter = new IntentFilter(UsbManager.ACTION_USB_PORT_CHANGED);
         context.registerReceiver(receiver, filter, null, handler);
+    }
+
+    /**
+     * GuardTalk post-unlock: when CE unlocks after boot, re-evaluate port security so
+     * charging-only can lift if the keyguard is no longer showing.
+     */
+    void registerUserUnlockedReceiver() {
+        if (!GuardTalkUsbProtectionPolicy.isFailClosedEnabled()) {
+            return;
+        }
+        var receiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                handler.post(() -> onUserUnlocked());
+            }
+        };
+        var filter = new IntentFilter(Intent.ACTION_USER_UNLOCKED);
+        context.registerReceiver(receiver, filter, null, handler);
+    }
+
+    private void onUserUnlocked() {
+        int setting = getEffectiveMode();
+        Slog.d(TAG, "onUserUnlocked: effectiveMode=" + setting
+                + " keyguardShowing=" + prevKeyguardShowing);
+        if (setting != UsbPortSecurity.MODE_CHARGING_ONLY_WHEN_LOCKED
+                && setting != UsbPortSecurity.MODE_CHARGING_ONLY_WHEN_LOCKED_AFU) {
+            return;
+        }
+        if (mustDenyUsbDataFunctions(context)) {
+            setSecurityStateForAllPorts(PortSecurityState.CHARGING_ONLY_IMMEDIATE);
+            return;
+        }
+        // Unlocked and not locked — enable data path (post-unlock policy).
+        if (Boolean.FALSE.equals(prevKeyguardShowing) || prevKeyguardShowing == null) {
+            setSecurityStateForAllPorts(PortSecurityState.PORTS_ENABLED);
+        }
     }
 
     private ArraySet<String> halEnabledPorts = new ArraySet<>();
@@ -179,7 +278,7 @@ public class UsbPortSecurityHooks {
 
         Slog.d(TAG, "halDisabledPorts: " + Arrays.toString(halDisabledPorts.toArray()) + ", halEnabledPorts: " + Arrays.toString(halEnabledPorts.toArray()));
 
-        int setting = UsbPortSecurity.MODE_SETTING.get();
+        int setting = getEffectiveMode();
 
         if (!halDisabledPorts.isEmpty()) {
             switch (setting) {
@@ -193,12 +292,15 @@ public class UsbPortSecurityHooks {
             switch (setting) {
                 case UsbPortSecurity.MODE_CHARGING_ONLY_WHEN_LOCKED:
                 case UsbPortSecurity.MODE_CHARGING_ONLY_WHEN_LOCKED_AFU:
-                    if (prevKeyguardShowing != null && !prevKeyguardShowing.booleanValue()) {
+                    if (prevKeyguardShowing != null && !prevKeyguardShowing.booleanValue()
+                            && !mustDenyUsbDataFunctions(context)) {
                         setSecurityStateForAllPorts(PortSecurityState.PORTS_ENABLED);
                     }
                     break;
                 case UsbPortSecurity.MODE_ALL_PORTS_ENABLED:
-                    setSecurityStateForAllPorts(PortSecurityState.PORTS_ENABLED);
+                    if (!mustDenyUsbDataFunctions(context)) {
+                        setSecurityStateForAllPorts(PortSecurityState.PORTS_ENABLED);
+                    }
                     break;
             }
         }
@@ -233,7 +335,7 @@ public class UsbPortSecurityHooks {
     private int usbConnectEventCount;
 
     void onKeyguardShowingStateChangedInner(Context ctx, boolean showing, int userId) {
-        int setting = UsbPortSecurity.MODE_SETTING.get();
+        int setting = getEffectiveMode();
 
         Slog.d(TAG, "onKeyguardShowingStateChanged, showing " + showing + ", userId " + userId
                 + ", modeSetting " + setting);
@@ -246,12 +348,19 @@ public class UsbPortSecurityHooks {
         prevKeyguardShowing = showingB;
         ++keyguardShowingChangeCount;
 
+        // getEffectiveMode() clamps AFU→WHEN_LOCKED under GuardTalk, so pre-first-unlock
+        // is covered by MODE_CHARGING_ONLY_WHEN_LOCKED (fail-closed). Non-GuardTalk AFU
+        // still waits for keyguardDismissedAtLeastOnce.
         if (setting == UsbPortSecurity.MODE_CHARGING_ONLY_WHEN_LOCKED
               || (keyguardDismissedAtLeastOnce && setting == UsbPortSecurity.MODE_CHARGING_ONLY_WHEN_LOCKED_AFU))
         {
             if (showing) {
                 setSecurityStateForAllPorts(PortSecurityState.CHARGING_ONLY);
                 usbConnectEventCountBeforeLocked = usbConnectEventCount;
+            } else if (mustDenyUsbDataFunctions(ctx)) {
+                // Keyguard dismissed but CE still locked (pre-first-unlock) — stay charging-only.
+                Slog.d(TAG, "GuardTalk: CE still locked — stay charging-only");
+                setSecurityStateForAllPorts(PortSecurityState.CHARGING_ONLY_IMMEDIATE);
             } else {
                 boolean forceReconnect = false;
                 if (!keyguardDismissedAtLeastOnce) {
@@ -278,10 +387,11 @@ public class UsbPortSecurityHooks {
                     final long curShowingChangeCount = keyguardShowingChangeCount;
                     final long delayMs = 1500;
                     handler.postDelayed(() -> {
-                        if (keyguardShowingChangeCount == curShowingChangeCount) {
+                        if (keyguardShowingChangeCount == curShowingChangeCount
+                                && !mustDenyUsbDataFunctions(ctx)) {
                             setSecurityStateForAllPorts(PortSecurityState.PORTS_ENABLED);
                         } else {
-                            Slog.d(TAG, "showingChangeCount changed, skipping delayed enable");
+                            Slog.d(TAG, "showingChangeCount changed or still denied, skipping delayed enable");
                         }
                     }, delayMs);
                 }
@@ -311,6 +421,12 @@ public class UsbPortSecurityHooks {
         if (PortSecurityState.PORTS_ENABLED.equals(state) && !halDisabledPorts.isEmpty()) {
             Slogf.d(TAG, "setSecurityStateForAllPorts: ignoring enable request since halDisabledPorts is %s", Arrays.toString(halDisabledPorts.toArray()));
             return;
+        }
+
+        // GuardTalk fail-closed: never enable the data path while locked / pre-unlock.
+        if (PortSecurityState.PORTS_ENABLED.equals(state) && mustDenyUsbDataFunctions(context)) {
+            Slog.d(TAG, "setSecurityStateForAllPorts: GuardTalk deny — forcing charging-only");
+            state = PortSecurityState.CHARGING_ONLY_IMMEDIATE;
         }
 
         setSecurityStateForAllPortsInner(context, state);
@@ -361,6 +477,12 @@ public class UsbPortSecurityHooks {
             // security state below
             Slog.e(TAG, "keyguard has to be dismissed before calling updateSetting()");
             return;
+        }
+
+        int clamped = GuardTalkUsbProtectionPolicy.clampPortSecurityMode(newValue);
+        if (clamped != newValue) {
+            Slog.w(TAG, "GuardTalk USB fail-closed: clamping mode " + newValue + " -> " + clamped);
+            newValue = clamped;
         }
 
         int prevValue = UsbPortSecurity.MODE_SETTING.get();

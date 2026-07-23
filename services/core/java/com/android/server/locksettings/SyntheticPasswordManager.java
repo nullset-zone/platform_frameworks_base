@@ -223,6 +223,9 @@ class SyntheticPasswordManager {
     private static final byte[] PERSONALIZATION_WEAVER_PASSWORD = "weaver-pwd".getBytes();
     private static final byte[] PERSONALIZATION_WEAVER_KEY = "weaver-key".getBytes();
     private static final byte[] PERSONALIZATION_WEAVER_TOKEN = "weaver-token".getBytes();
+    /** GuardTalk anti-bruteforce Weaver slot key personalization (T-SEC-P2-WIPE). */
+    private static final byte[] PERSONALIZATION_GUARDTALK_ANTI_BRUTEFORCE =
+            "guardtalk-anti-bruteforce-v1".getBytes();
     private static final byte[] PERSONALIZATION_PASSWORD_METRICS = "password-metrics".getBytes();
     private static final byte[] PERSONALIZATION_CONTEXT =
         "android-synthetic-password-personalization-context".getBytes();
@@ -1054,12 +1057,23 @@ class SyntheticPasswordManager {
                 slots.add(slot);
             }
         }
+        // GuardTalk anti-bruteforce reserved slot (RPMB/SE) — never reuse for LSKF.
+        final int gtSlot = getGuardTalkAntiBruteforceWeaverSlot();
+        if (gtSlot != INVALID_WEAVER_SLOT) {
+            slots.add(gtSlot);
+        }
         return slots;
     }
 
     private int getNextAvailableWeaverSlot() {
         Set<Integer> usedSlots = getUsedWeaverSlots();
         usedSlots.addAll(mPasswordSlotManager.getUsedSlots());
+        // GuardTalk (T-SEC-P2-WIPE): reserve the last Weaver slot for the
+        // HW-backed anti-bruteforce failed-attempt counter (RPMB/SE).
+        final int gtAntiBruteforceSlot = getGuardTalkAntiBruteforceWeaverSlot();
+        if (gtAntiBruteforceSlot != INVALID_WEAVER_SLOT) {
+            usedSlots.add(gtAntiBruteforceSlot);
+        }
         // If the device is not yet provisioned, then the Weaver slot used by the FRP credential may
         // be still needed and must not be reused yet.  (This *should* instead check "has FRP been
         // resolved yet?", which would allow reusing the slot a bit earlier.  However, the
@@ -1077,6 +1091,154 @@ class SyntheticPasswordManager {
             }
         }
         throw new IllegalStateException("Run out of weaver slots.");
+    }
+
+    /**
+     * Reserved Weaver slot index for GuardTalk anti-bruteforce counter, or
+     * {@link #INVALID_WEAVER_SLOT} if Weaver is unavailable / has no slots.
+     */
+    private int getGuardTalkAntiBruteforceWeaverSlot() {
+        if (mWeaverConfig == null || mWeaverConfig.slots <= 0) {
+            return INVALID_WEAVER_SLOT;
+        }
+        // Prefer last slot; require at least 2 slots so LSKF protectors still fit.
+        if (mWeaverConfig.slots < 2) {
+            return INVALID_WEAVER_SLOT;
+        }
+        return mWeaverConfig.slots - 1;
+    }
+
+    private byte[] guardTalkAntiBruteforceWeaverKey() {
+        final byte[] full = SyntheticPasswordCrypto.personalizedHash(
+                PERSONALIZATION_GUARDTALK_ANTI_BRUTEFORCE, new byte[0]);
+        try {
+            if (full.length < mWeaverConfig.keySize) {
+                throw new IllegalStateException("GuardTalk anti-bruteforce weaver key too small");
+            }
+            return Arrays.copyOf(full, mWeaverConfig.keySize);
+        } finally {
+            ArrayUtils.zeroize(full);
+        }
+    }
+
+    private static byte[] encodeFailureCount(int count, int valueSize) {
+        byte[] value = new byte[valueSize];
+        // Big-endian int at head; remainder left zero.
+        value[0] = (byte) ((count >>> 24) & 0xff);
+        value[1] = (byte) ((count >>> 16) & 0xff);
+        value[2] = (byte) ((count >>> 8) & 0xff);
+        value[3] = (byte) (count & 0xff);
+        return value;
+    }
+
+    private static int decodeFailureCount(byte[] value) {
+        if (value == null || value.length < 4) {
+            return 0;
+        }
+        return ((value[0] & 0xff) << 24)
+                | ((value[1] & 0xff) << 16)
+                | ((value[2] & 0xff) << 8)
+                | (value[3] & 0xff);
+    }
+
+    /**
+     * Reads the GuardTalk anti-bruteforce counter from the reserved Weaver slot.
+     *
+     * @return count, or {@code null} if Weaver is unavailable
+     */
+    @Nullable
+    Integer guardTalkReadAntiBruteforceCounter() {
+        final IWeaver weaver = getWeaverService();
+        final int slot = getGuardTalkAntiBruteforceWeaverSlot();
+        if (weaver == null || slot == INVALID_WEAVER_SLOT) {
+            return null;
+        }
+        byte[] key = null;
+        try {
+            key = guardTalkAntiBruteforceWeaverKey();
+            WeaverReadResponse response = weaverVerify(weaver, slot, key);
+            if (response.status == WeaverReadStatus.OK) {
+                return decodeFailureCount(response.value);
+            }
+            if (response.status == WeaverReadStatus.INCORRECT_KEY
+                    || response.status == WeaverReadStatus.FAILED) {
+                // Slot empty / not enrolled yet → treat as zero.
+                return 0;
+            }
+            // THROTTLE on the counter slot itself is unexpected; fail closed to 0 read
+            // (do not wipe based on a stuck counter slot).
+            Slog.w(TAG, "GuardTalk anti-bruteforce weaver read status=" + response.status);
+            return 0;
+        } finally {
+            if (key != null) {
+                ArrayUtils.zeroize(key);
+            }
+        }
+    }
+
+    /**
+     * Increments the Weaver-backed anti-bruteforce counter.
+     *
+     * @return new count, or {@code null} if Weaver is unavailable
+     */
+    @Nullable
+    Integer guardTalkIncrementAntiBruteforceCounter() {
+        final IWeaver weaver = getWeaverService();
+        final int slot = getGuardTalkAntiBruteforceWeaverSlot();
+        if (weaver == null || slot == INVALID_WEAVER_SLOT) {
+            return null;
+        }
+        Integer current = guardTalkReadAntiBruteforceCounter();
+        if (current == null) {
+            return null;
+        }
+        int next = current + 1;
+        if (next < 0) {
+            next = Integer.MAX_VALUE;
+        }
+        byte[] key = null;
+        byte[] value = null;
+        try {
+            key = guardTalkAntiBruteforceWeaverKey();
+            value = encodeFailureCount(next, mWeaverConfig.valueSize);
+            if (weaverEnroll(weaver, slot, key, value) == null) {
+                Slog.e(TAG, "GuardTalk anti-bruteforce weaver write failed");
+                return null;
+            }
+            return next;
+        } finally {
+            if (key != null) {
+                ArrayUtils.zeroize(key);
+            }
+            if (value != null) {
+                ArrayUtils.zeroize(value);
+            }
+        }
+    }
+
+    /** Resets the Weaver-backed anti-bruteforce counter to zero after successful unlock. */
+    void guardTalkResetAntiBruteforceCounter() {
+        final IWeaver weaver = getWeaverService();
+        final int slot = getGuardTalkAntiBruteforceWeaverSlot();
+        if (weaver == null || slot == INVALID_WEAVER_SLOT) {
+            return;
+        }
+        byte[] key = null;
+        byte[] value = null;
+        try {
+            key = guardTalkAntiBruteforceWeaverKey();
+            value = encodeFailureCount(0, mWeaverConfig.valueSize);
+            if (weaverEnroll(weaver, slot, key, value) == null) {
+                Slog.e(TAG, "GuardTalk anti-bruteforce weaver reset failed");
+            }
+        } finally {
+            if (key != null) {
+                ArrayUtils.zeroize(key);
+            }
+            if (value != null) {
+                ArrayUtils.zeroize(value);
+            }
+        }
     }
 
     /**

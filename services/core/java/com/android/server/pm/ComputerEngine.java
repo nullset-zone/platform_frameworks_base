@@ -3947,6 +3947,13 @@ public class ComputerEngine implements Computer {
     @Override
     public final boolean isInstallDisabledForPackage(@NonNull String packageName, int uid,
             @UserIdInt int userId) {
+        // GuardTalk T-SEC-P5-HARDEN: product-level unknown-source / sideload block.
+        // System/root retain privileged install paths (OTA / platform); third-party
+        // REQUEST_INSTALL_PACKAGES and untrusted sources are denied.
+        if (android.guardtalk.GuardTalkProductionHardeningPolicy.mustBlockUnknownSources()
+                && !PackageManagerServiceUtils.isSystemOrRoot(uid)) {
+            return true;
+        }
         if (mUserManager.hasUserRestriction(UserManager.DISALLOW_INSTALL_UNKNOWN_SOURCES, userId)
                 || mUserManager.hasUserRestriction(
                 UserManager.DISALLOW_INSTALL_UNKNOWN_SOURCES_GLOBALLY, userId)) {

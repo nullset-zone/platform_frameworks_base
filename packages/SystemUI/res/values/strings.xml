@@ -977,6 +977,17 @@
     <string name="quick_settings_camera_label">Camera access</string>
     <!-- QuickSettings: Microphone [CHAR LIMIT=NONE] -->
     <string name="quick_settings_mic_label">Mic access</string>
+    <!-- QuickSettings: GuardTalk Auto-reboot (T-SEC-P3-QS) [CHAR LIMIT=NONE] -->
+    <string name="quick_settings_auto_reboot_label">Auto-reboot</string>
+    <!-- QuickSettings: Auto-reboot secondary when Off [CHAR LIMIT=32] -->
+    <string name="quick_settings_auto_reboot_secondary_off">Off</string>
+    <!-- QuickSettings: Auto-reboot secondary when On (generic) [CHAR LIMIT=32] -->
+    <string name="quick_settings_auto_reboot_secondary_on">On</string>
+    <!-- QuickSettings: Auto-reboot secondary hours [CHAR LIMIT=32] -->
+    <plurals name="quick_settings_auto_reboot_secondary_hours">
+        <item quantity="one">%d hour</item>
+        <item quantity="other">%d hours</item>
+    </plurals>
     <!-- QuickSettings: Camera or microphone access is allowed. If you update this string, please
     update the string "available" in packages/modules/Permission/PermissionController[CHAR LIMIT=NONE] -->
     <string name="quick_settings_camera_mic_available">Available</string>

@@ -56,7 +56,9 @@ public class DuressPasswordHelper {
                 credentialCopy.zeroize();
             }
             if (isDuressCredential) {
-                DuressWipe.run(lockSettingsService.getContext());
+                // Shared engine (T-SEC-P2-WIPE): same path as Secure wipe UI + anti-bruteforce.
+                SecureWipeEngine.run(lockSettingsService.getContext(),
+                        SecureWipeEngine.Reason.DURESS);
             }
         });
     }

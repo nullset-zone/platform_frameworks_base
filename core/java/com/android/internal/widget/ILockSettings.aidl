@@ -116,4 +116,9 @@ interface ILockSettings {
     boolean writeRepairModeCredential(int userId);
     void setDuressCredentials(in LockscreenCredential ownerCredential, in LockscreenCredential duressPin, in LockscreenCredential duressPassword);
     boolean hasDuressCredentials(in LockscreenCredential ownerCredential);
+    /**
+     * GuardTalk secure wipe (T-SEC-P2-WIPE): verify owner credential then run the
+     * shared SecureWipeEngine (FBE/KeyMint crypto-erase). Does not return on success.
+     */
+    void requestSecureWipe(in LockscreenCredential ownerCredential);
 }

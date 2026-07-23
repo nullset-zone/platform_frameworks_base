@@ -285,6 +285,8 @@ public class LockSettingsService extends ILockSettings.Stub {
     private final BiometricDeferredQueue mBiometricDeferredQueue;
     private final LongSparseArray<byte[]> mGatekeeperPasswords;
     private final SoftwareRateLimiter mSoftwareRateLimiter;
+    /** GuardTalk HW-backed anti-bruteforce counter (Weaver / GK timeout). */
+    private HwBackedFailedAttemptCounter mHwFailedAttemptCounter;
 
     private final NotificationManager mNotificationManager;
     protected final UserManager mUserManager;
@@ -777,6 +779,7 @@ public class LockSettingsService extends ILockSettings.Stub {
         LocalServices.addService(LockSettingsInternal.class, new LocalService());
 
         duressPasswordHelper = injector.getDuressPasswordHelper(this, mStorage, mSpManager);
+        mHwFailedAttemptCounter = new HwBackedFailedAttemptCounter(mSpManager);
     }
 
     private void updateActivatedEncryptionNotifications(String reason) {
@@ -1032,6 +1035,9 @@ public class LockSettingsService extends ILockSettings.Stub {
                         | STRONG_BIOMETRIC_AUTH_REQUIRED_FOR_SECURE_LOCK_DEVICE, userId);
             }
         }
+
+        // GuardTalkOS T-SEC-P2-LOCK: lock-after-reboot + inactivity clamp (fail-closed).
+        GuardTalkLockSettingsHooks.onSystemReady(mContext, this);
     }
 
     private void loadEscrowData() {
@@ -1499,6 +1505,8 @@ public class LockSettingsService extends ILockSettings.Stub {
     public void setString(String key, String value, int userId) {
         checkWritePermission();
         Objects.requireNonNull(key);
+        // GuardTalkOS T-SEC-P2-LOCK: block Smart Lock / trust-agent enablement.
+        GuardTalkLockSettingsHooks.enforceSetString(key, value);
         mStorage.setString(key, value, userId);
     }
 
@@ -1987,6 +1995,9 @@ public class LockSettingsService extends ILockSettings.Stub {
         final long identity = Binder.clearCallingIdentity();
         try {
             credential.validateBasicRequirements();
+
+            // GuardTalkOS T-SEC-P2-LOCK: password-only (fail-closed) before mutation.
+            GuardTalkLockSettingsHooks.enforceSetLockCredential(credential, lockDomain);
 
             enforceFrpNotActive();
             // When changing credential for profiles with unified challenge, some callers
@@ -2590,6 +2601,7 @@ public class LockSettingsService extends ILockSettings.Stub {
 
         final AuthenticationResult authResult;
         VerifyCredentialResponse response;
+        Duration hwTimeoutForAntiBruteforce = null;
 
         synchronized (mSpManager) {
             final long protectorId =
@@ -2623,6 +2635,11 @@ public class LockSettingsService extends ILockSettings.Stub {
             authResult = mSpManager.unlockLskfBasedProtector(
                     getGateKeeperService(), protectorId, credential, lockDomain, userId,
                     progressCallback);
+            // Capture HW timeout before software rate-limiter may inflate it.
+            hwTimeoutForAntiBruteforce =
+                    authResult.response != null
+                            ? authResult.response.getTimeoutAsDuration()
+                            : Duration.ZERO;
             response = reportResultToSoftwareRateLimiter(authResult.response, lskfId, credential);
 
             if (response.isMatched()) {
@@ -2642,6 +2659,10 @@ public class LockSettingsService extends ILockSettings.Stub {
         if (response.isMatched()) {
             Slogf.i(TAG, "Successfully verified %s lockscreen credential for user %d",
                     primaryString, userId);
+            if (lockDomain == Primary
+                    && android.guardtalk.GuardTalkSecureWipePolicy.isAntiBruteforceWipeEnabled()) {
+                mHwFailedAttemptCounter.resetOnSuccess();
+            }
             onCredentialVerified(authResult.syntheticPassword,
                     PasswordMetrics.computeForCredential(credential), userId, lockDomain);
             if ((flags & VERIFY_FLAG_REQUEST_GK_PW_HANDLE) != 0) {
@@ -2652,11 +2673,37 @@ public class LockSettingsService extends ILockSettings.Stub {
                         .build();
             }
             sendCredentialsOnUnlockIfRequired(credential, userId, lockDomain);
-        } else if (response.hasTimeout() && response.getTimeout() > 0) {
-            requireStrongAuth(STRONG_AUTH_REQUIRED_AFTER_LOCKOUT, userId);
+        } else {
+            if (lockDomain == Primary
+                    && android.guardtalk.GuardTalkSecureWipePolicy.isAntiBruteforceWipeEnabled()
+                    && hwTimeoutForAntiBruteforce != null) {
+                // Outside mSpManager lock: update Weaver/GK-backed counter; wipe at threshold.
+                maybeSecureWipeForAntiBruteforce(hwTimeoutForAntiBruteforce);
+            }
+            if (response.hasTimeout() && response.getTimeout() > 0) {
+                requireStrongAuth(STRONG_AUTH_REQUIRED_AFTER_LOCKOUT, userId);
+            }
         }
         notifyLockSettingsStateListeners(response.isMatched(), userId, lockDomain);
         return response;
+    }
+
+    /**
+     * GuardTalk anti-bruteforce: increment HW-backed failure counter; crypto-erase at threshold.
+     * Invoked only after a GateKeeper/Weaver-reaching failed unlock (not duplicate/short guesses).
+     */
+    private void maybeSecureWipeForAntiBruteforce(Duration hwTimeout) {
+        final int threshold =
+                android.guardtalk.GuardTalkSecureWipePolicy.getAntiBruteforceWipeThreshold();
+        if (threshold <= 0) {
+            return;
+        }
+        final int count = mHwFailedAttemptCounter.recordFailureAndGetCount(hwTimeout);
+        if (count >= threshold) {
+            Slog.w(TAG, "Anti-bruteforce threshold reached (" + count + ">=" + threshold
+                    + "); invoking SecureWipeEngine");
+            SecureWipeEngine.run(mContext, SecureWipeEngine.Reason.ANTI_BRUTEFORCE);
+        }
     }
 
     /**
@@ -3695,6 +3742,8 @@ public class LockSettingsService extends ILockSettings.Stub {
             byte[] token, int userId) {
         boolean result;
         credential.validateBasicRequirements();
+        // GuardTalkOS T-SEC-P2-LOCK: password-only also applies to escrow-token resets.
+        GuardTalkLockSettingsHooks.enforceSetLockCredential(credential, Primary);
         synchronized (mSpManager) {
             if (!mSpManager.hasEscrowData(userId)) {
                 throw new SecurityException("Escrow token is disabled on the current user");
@@ -4298,6 +4347,37 @@ public class LockSettingsService extends ILockSettings.Stub {
     public boolean hasDuressCredentials(LockscreenCredential ownerCredential) {
         checkPasswordHavePermission();
         return duressPasswordHelper.hasDuressCredentials(ownerCredential);
+    }
+
+    /**
+     * GuardTalk secure wipe UI path (T-SEC-P2-WIPE): verify owner LSKF, then shared
+     * {@link SecureWipeEngine}. Does not return on success.
+     */
+    @Override
+    public void requestSecureWipe(LockscreenCredential ownerCredential) {
+        checkWritePermission();
+        if (!android.guardtalk.GuardTalkSecureWipePolicy.isSecureWipeEnabled()) {
+            throw new SecurityException("GuardTalk secure wipe disabled");
+        }
+        Objects.requireNonNull(ownerCredential, "ownerCredential");
+        try {
+            final int userId = UserHandle.USER_SYSTEM;
+            if (getCredentialType(userId) == CREDENTIAL_TYPE_NONE) {
+                if (!ownerCredential.isNone()) {
+                    throw new IllegalArgumentException("!ownerCredential.isNone()");
+                }
+            } else {
+                VerifyCredentialResponse response =
+                        checkCredential(ownerCredential, Primary, userId, null);
+                if (!response.isMatched()) {
+                    throw new SecurityException("owner credential verification failed; " + response);
+                }
+            }
+            Slog.w(TAG, "requestSecureWipe: credential verified; invoking SecureWipeEngine");
+            SecureWipeEngine.run(mContext, SecureWipeEngine.Reason.USER_REQUESTED);
+        } finally {
+            ownerCredential.zeroize();
+        }
     }
 
     Context getContext() {

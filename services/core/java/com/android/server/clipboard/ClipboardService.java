@@ -62,10 +62,12 @@ import android.content.Context;
 import android.content.IClipboard;
 import android.content.IOnPrimaryClipChangedListener;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManagerInternal;
 import android.content.pm.UserInfo;
 import android.graphics.drawable.Drawable;
+import android.guardtalk.GuardTalkPrivacyPolicy;
 import android.hardware.display.DisplayManager;
 import android.net.Uri;
 import android.os.Binder;
@@ -78,6 +80,7 @@ import android.os.IUserManager;
 import android.os.Looper;
 import android.os.Message;
 import android.os.Parcel;
+import android.os.Process;
 import android.os.RemoteCallbackList;
 import android.os.RemoteException;
 import android.os.ServiceManager;
@@ -177,6 +180,9 @@ public class ClipboardService extends SystemService {
     private final Consumer<ClipData> mClipboardMonitor;
     private final Handler mWorkerHandler;
 
+    /** GuardTalk clipboard_clear: true after lock/screen listeners are registered. */
+    private boolean mGuardTalkClipboardClearRegistered;
+
     @GuardedBy("mLock")
     // Maps (userId, deviceId) to Clipboard.
     private final SparseArrayMap<Integer, Clipboard> mClipboards = new SparseArrayMap<>();
@@ -252,6 +258,80 @@ public class ClipboardService extends SystemService {
         publishBinderService(Context.CLIPBOARD_SERVICE, new ClipboardImpl());
         LocalServices.addService(ClipboardManagerInternal.class, new ClipboardInternalImpl());
         registerVirtualDeviceListener();
+        registerGuardTalkClipboardClearPolicy();
+    }
+
+    /**
+     * GuardTalk clipboard_clear (T-SEC-P4-PRIVACY): clear primary clips on lock
+     * (and screen-off as a fail-closed companion). Timeout auto-clear is enforced
+     * in {@link ClipboardImpl#scheduleAutoClear}. Reboot clears RAM clips by nature.
+     */
+    private void registerGuardTalkClipboardClearPolicy() {
+        if (mGuardTalkClipboardClearRegistered
+                || !GuardTalkPrivacyPolicy.isClipboardClearEnabled()) {
+            return;
+        }
+        mGuardTalkClipboardClearRegistered = true;
+        final KeyguardManager keyguardManager =
+                getContext().getSystemService(KeyguardManager.class);
+        if (keyguardManager != null) {
+            try {
+                keyguardManager.addKeyguardLockedStateListener(
+                        getContext().getMainExecutor(),
+                        isKeyguardLocked -> {
+                            if (GuardTalkPrivacyPolicy.mustClearClipboardOnLock(
+                                    isKeyguardLocked)) {
+                                clearAllClipboardsForGuardTalk("lock");
+                            }
+                        });
+            } catch (RuntimeException e) {
+                Slog.w(TAG, "GuardTalk clipboard_clear: KeyguardLockedStateListener failed", e);
+                // Fail-closed: clear once if we cannot observe future lock events.
+                clearAllClipboardsForGuardTalk("lock_listener_unavailable");
+            }
+        } else {
+            Slog.w(TAG, "GuardTalk clipboard_clear: KeyguardManager null; fail-closed clear");
+            clearAllClipboardsForGuardTalk("keyguard_unavailable");
+        }
+        final IntentFilter filter = new IntentFilter();
+        filter.addAction(Intent.ACTION_SCREEN_OFF);
+        try {
+            getContext().registerReceiver(new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    if (intent == null) {
+                        return;
+                    }
+                    if (Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) {
+                        // Screen-off is treated as lock-adjacent; fail-closed clear.
+                        clearAllClipboardsForGuardTalk("screen_off");
+                    }
+                }
+            }, filter, Context.RECEIVER_NOT_EXPORTED);
+        } catch (RuntimeException e) {
+            Slog.w(TAG, "GuardTalk clipboard_clear: SCREEN_OFF receiver failed", e);
+        }
+        Slog.i(TAG, "GuardTalk clipboard_clear policy registered"
+                + " timeoutMs=" + GuardTalkPrivacyPolicy.getClipboardClearTimeoutMs());
+    }
+
+    /** Clears every in-memory primary clip when GuardTalk clipboard_clear is on. */
+    private void clearAllClipboardsForGuardTalk(String reason) {
+        if (!GuardTalkPrivacyPolicy.isClipboardClearEnabled()) {
+            return;
+        }
+        synchronized (mLock) {
+            mClipboards.forEach((userId, deviceId, clipboard) -> {
+                if (clipboard == null || clipboard.primaryClip == null) {
+                    return;
+                }
+                final int uid = UserHandle.getUid(userId, Process.SYSTEM_UID);
+                FrameworkStatsLog.write(FrameworkStatsLog.CLIPBOARD_CLEARED,
+                        FrameworkStatsLog.CLIPBOARD_CLEARED__SOURCE__AUTO_CLEAR);
+                setPrimaryClipInternalLocked(clipboard, null, uid, null);
+            });
+        }
+        Slog.i(TAG, "GuardTalk clipboard_clear: cleared all clips (" + reason + ")");
     }
 
     private void registerVirtualDeviceListener() {
@@ -616,8 +696,13 @@ public class ClipboardService extends SystemService {
                 @UserIdInt int userId, int intendingUid, int intendingDeviceId) {
             final long oldIdentity = Binder.clearCallingIdentity();
             try {
-                if (DeviceConfig.getBoolean(DeviceConfig.NAMESPACE_CLIPBOARD,
-                        PROPERTY_AUTO_CLEAR_ENABLED, true)) {
+                // GuardTalk clipboard_clear: fail-closed toward clearing — force
+                // auto-clear even when DeviceConfig disables it.
+                final boolean autoClearEnabled =
+                        GuardTalkPrivacyPolicy.isClipboardClearEnabled()
+                                || DeviceConfig.getBoolean(DeviceConfig.NAMESPACE_CLIPBOARD,
+                                        PROPERTY_AUTO_CLEAR_ENABLED, true);
+                if (autoClearEnabled) {
                     Pair<Integer, Integer> userIdDeviceId = new Pair<>(userId, intendingDeviceId);
                     mClipboardClearHandler.removeEqualMessages(ClipboardClearHandler.MSG_CLEAR,
                             userIdDeviceId);
@@ -637,6 +722,9 @@ public class ClipboardService extends SystemService {
         }
 
         private long getTimeoutForAutoClear() {
+            if (GuardTalkPrivacyPolicy.isClipboardClearEnabled()) {
+                return GuardTalkPrivacyPolicy.getClipboardClearTimeoutMs();
+            }
             return DeviceConfig.getLong(DeviceConfig.NAMESPACE_CLIPBOARD,
                     PROPERTY_AUTO_CLEAR_TIMEOUT,
                     DEFAULT_CLIPBOARD_TIMEOUT_MILLIS);

@@ -30,9 +30,15 @@ public class ExtSettings {
     public static final BoolSetting AUTO_GRANT_OTHER_SENSORS_PERMISSION = new BoolSetting(
             Setting.Scope.PER_USER, Settings.Secure.AUTO_GRANT_OTHER_SENSORS_PERMISSION, true);
 
+    /**
+     * Auto-reboot timeout while keyguard is showing (milliseconds).
+     * GuardTalk (T-SEC-P2-AUTOREBOOT) clamps to Off / 1h / 2h / 4h / 8h when
+     * {@code ro.guardtalk.auto_reboot_profiles=1} — see
+     * {@link android.guardtalk.GuardTalkAutoRebootPolicy}.
+     */
     public static final IntSetting AUTO_REBOOT_TIMEOUT = new IntSetting(
             Setting.Scope.GLOBAL, Settings.Global.AUTO_REBOOT_TIMEOUT,
-            // default value: 18 hours
+            // default value: 18 hours (GuardTalk clamps to an allowed profile)
             (int) TimeUnit.HOURS.toMillis(18));
 
     public static final BoolSetting SCREENSHOT_TIMESTAMP_EXIF = new BoolSetting(

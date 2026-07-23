@@ -27,6 +27,7 @@ import android.content.UriPermission;
 import android.database.Cursor;
 import android.database.MatrixCursor;
 import android.database.MatrixCursor.RowBuilder;
+import android.guardtalk.GuardTalkFilesPolicy;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Bundle;
@@ -641,6 +642,10 @@ public class ExternalStorageProvider extends FileSystemProvider {
 
     @Override
     protected boolean isTrashSupported(File file) {
+        // GuardTalkOS T-SEC-P4-FILES: critical mounts never trashable.
+        if (GuardTalkFilesPolicy.isProtectedFile(file)) {
+            return false;
+        }
         try {
             String documentId = getDocIdForFile(file);
             // Trash not supported on USB devices

@@ -27,6 +27,7 @@ import android.app.DownloadManager;
 import android.app.SearchManager;
 import android.app.admin.DevicePolicyManager;
 import android.content.Context;
+import android.guardtalk.GuardTalkPermissionDefaultsPolicy;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
@@ -419,9 +420,44 @@ final class DefaultPermissionGrantPolicy {
         grantDefaultSystemHandlerPermissions(pm, userId);
         grantSignatureAppsNotificationPermissions(pm, userId);
         grantDefaultPermissionExceptions(pm, userId);
+        // GuardTalk T-SEC-P4-PERMS: Messenger product grants (no-op if APK absent).
+        grantGuardTalkMessengerDefaultPermissions(pm, userId);
 
         // Apply delayed state
         pm.apply();
+    }
+
+    /**
+     * Grant GuardTalk Messenger the product default runtime permission set when
+     * {@link GuardTalkPermissionDefaultsPolicy} is enabled and the package is
+     * installed. Uses ignore-system so grants apply whether Messenger lands as
+     * a system/priv-app or a product/user package.
+     */
+    private void grantGuardTalkMessengerDefaultPermissions(
+            PackageManagerWrapper pm, int userId) {
+        if (!GuardTalkPermissionDefaultsPolicy.isEnabled()) {
+            return;
+        }
+        final String packageName = GuardTalkPermissionDefaultsPolicy.MESSENGER_PACKAGE_NAME;
+        final PackageInfo pkg = pm.getPackageInfo(packageName);
+        if (pkg == null) {
+            Log.i(TAG, "GuardTalk Messenger not installed (" + packageName
+                    + "); skipping product default grants");
+            return;
+        }
+        if (!doesPackageSupportRuntimePermissions(pkg)) {
+            Log.w(TAG, "GuardTalk Messenger does not support runtime permissions; skip");
+            return;
+        }
+        Log.i(TAG, "Granting GuardTalk Messenger default permissions to " + packageName
+                + " for user " + userId);
+        final Set<String> messengerPerms =
+                GuardTalkPermissionDefaultsPolicy.getMessengerRuntimePermissions();
+        grantPermissionsToPackage(pm, pkg, userId,
+                false /* systemFixed */,
+                true /* ignoreSystemPackage */,
+                true /* whitelistRestrictedPermissions */,
+                messengerPerms);
     }
 
     private void grantSignatureAppsNotificationPermissions(PackageManagerWrapper pm, int userId) {
@@ -1481,6 +1517,18 @@ final class DefaultPermissionGrantPolicy {
         for (int i = 0; i < exceptionCount; i++) {
             String packageName = mGrantExceptions.keyAt(i);
             PackageInfo pkg = pm.getPackageInfo(packageName);
+            if (pkg == null) {
+                continue;
+            }
+            // GuardTalk T-SEC-P4-PERMS: deny third-party exception auto-grants.
+            final boolean isSystemApp = pkg.applicationInfo != null
+                    && pkg.applicationInfo.isSystemApp();
+            if (!GuardTalkPermissionDefaultsPolicy.allowDefaultPermissionException(
+                    packageName, isSystemApp)) {
+                Log.i(TAG, "GuardTalk: skipping default-permission exception for third-party "
+                        + packageName);
+                continue;
+            }
             List<DefaultPermissionGrant> permissionGrants = mGrantExceptions.valueAt(i);
             final int permissionGrantCount = permissionGrants.size();
             for (int j = 0; j < permissionGrantCount; j++) {

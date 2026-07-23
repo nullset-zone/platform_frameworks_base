@@ -46,6 +46,7 @@ object SubtitleArrayMapping {
         subtitleIdsMap["reduce_brightness"] = R.array.tile_states_reduce_brightness
         subtitleIdsMap["cameratoggle"] = R.array.tile_states_cameratoggle
         subtitleIdsMap["mictoggle"] = R.array.tile_states_mictoggle
+        subtitleIdsMap["autoreboot"] = R.array.tile_states_autoreboot
         subtitleIdsMap["controls"] = R.array.tile_states_controls
         subtitleIdsMap["wallet"] = R.array.tile_states_wallet
         subtitleIdsMap["qr_code_scanner"] = R.array.tile_states_qr_code_scanner

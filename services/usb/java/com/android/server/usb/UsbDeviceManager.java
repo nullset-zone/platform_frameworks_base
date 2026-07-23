@@ -881,8 +881,18 @@ public class UsbDeviceManager implements ActivityTaskManagerInternal.ScreenObser
         }
 
         protected boolean isUsbTransferAllowed() {
+            // GuardTalk fail-closed: block MTP/PTP file transfer while locked / pre-unlock.
+            if (mustDenyUsbData()) {
+                return false;
+            }
             UserManager userManager = (UserManager) mContext.getSystemService(Context.USER_SERVICE);
             return !userManager.hasUserRestriction(UserManager.DISALLOW_USB_FILE_TRANSFER);
+        }
+
+        /** GuardTalk: USB data (ADB/MTP/PTP) denied while locked or pre-first-unlock. */
+        protected boolean mustDenyUsbData() {
+            return com.android.server.policy.keyguard.UsbPortSecurityHooks
+                    .mustDenyUsbDataFunctions(mContext);
         }
 
         private void attachAccessory() {
@@ -1219,10 +1229,13 @@ public class UsbDeviceManager implements ActivityTaskManagerInternal.ScreenObser
          * charging are accounted for.
          */
         long getAppliedFunctions(long functions) {
+            // GuardTalk: strip ADB/MTP/PTP while locked or pre-first-unlock (charging-only).
+            functions = com.android.server.policy.keyguard.UsbPortSecurityHooks
+                    .sanitizeUsbFunctions(mContext, functions);
             if (functions == UsbManager.FUNCTION_NONE) {
                 return getChargingFunctions();
             }
-            if (isAdbEnabled()) {
+            if (isAdbEnabled() && !mustDenyUsbData()) {
                 return functions | UsbManager.FUNCTION_ADB;
             }
             return functions;
@@ -1767,6 +1780,10 @@ public class UsbDeviceManager implements ActivityTaskManagerInternal.ScreenObser
         }
 
         protected long getChargingFunctions() {
+            // GuardTalk fail-closed: true charging-only — never promote ADB/MTP while denied.
+            if (mustDenyUsbData()) {
+                return UsbManager.FUNCTION_NONE;
+            }
             // if ADB is enabled, reset functions to ADB
             // else enable MTP as usual.
             if (isAdbEnabled()) {
@@ -2131,9 +2148,16 @@ public class UsbDeviceManager implements ActivityTaskManagerInternal.ScreenObser
             if (functions == null) {
                 functions = "";
             }
-            if (isAdbEnabled()) {
+            // GuardTalk: never attach ADB while locked / pre-first-unlock.
+            if (isAdbEnabled() && !mustDenyUsbData()) {
                 functions = addFunction(functions, UsbManager.USB_FUNCTION_ADB);
             } else {
+                functions = removeFunction(functions, UsbManager.USB_FUNCTION_ADB);
+            }
+            // Also strip MTP/PTP string tokens when denied (APK-over-USB / file transfer).
+            if (mustDenyUsbData()) {
+                functions = removeFunction(functions, UsbManager.USB_FUNCTION_MTP);
+                functions = removeFunction(functions, UsbManager.USB_FUNCTION_PTP);
                 functions = removeFunction(functions, UsbManager.USB_FUNCTION_ADB);
             }
             return functions;
@@ -2742,6 +2766,9 @@ public class UsbDeviceManager implements ActivityTaskManagerInternal.ScreenObser
      * @param functions The functions to set, or empty to set the charging function.
      */
     public void setCurrentFunctions(long functions, int operationId) {
+        // GuardTalk fail-closed: reject ADB/MTP/PTP (and thus APK-over-USB) while denied.
+        functions = com.android.server.policy.keyguard.UsbPortSecurityHooks
+                .sanitizeUsbFunctions(mContext, functions);
         if (DEBUG) {
             Slog.d(TAG, "setCurrentFunctions(" + UsbManager.usbFunctionsToString(functions) + ")");
         }

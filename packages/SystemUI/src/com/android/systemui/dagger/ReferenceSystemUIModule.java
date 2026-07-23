@@ -31,6 +31,7 @@ import com.android.systemui.accessibility.SystemActionsModule;
 import com.android.systemui.accessibility.data.repository.AccessibilityRepositoryModule;
 import com.android.systemui.actioncorner.ActionCornerModule;
 import com.android.systemui.battery.BatterySaverModule;
+import com.android.systemui.qs.tiles.AutoRebootModule;
 import com.android.systemui.clipboardoverlay.dagger.ClipboardOverlayOverrideModule;
 import com.android.systemui.communal.posturing.dagger.NoopPosturingModule;
 import com.android.systemui.display.dagger.SystemUIDisplaySubcomponent;
@@ -138,6 +139,7 @@ import javax.inject.Provider;
         AccessibilityModule.class,
         AccessibilityRepositoryModule.class,
         AospPolicyModule.class,
+        AutoRebootModule.class,
         BatterySaverModule.class,
         BrightnessSliderModule.class,
         CentralSurfacesModule.class,

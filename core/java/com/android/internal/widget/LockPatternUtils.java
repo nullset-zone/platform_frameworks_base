@@ -2319,4 +2319,16 @@ public class LockPatternUtils {
             throw e.rethrowFromSystemServer();
         }
     }
+
+    /**
+     * GuardTalk secure wipe (T-SEC-P2-WIPE): verify {@code ownerCredential} then
+     * crypto-erase via the shared SecureWipeEngine. Does not return on success.
+     */
+    public void requestSecureWipe(@NonNull LockscreenCredential ownerCredential) {
+        try {
+            getLockSettings().requestSecureWipe(ownerCredential);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
 }
