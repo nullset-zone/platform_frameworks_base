@@ -194,8 +194,8 @@ public class UsbPortSecurityHooks {
 
                 // USB data-cable duress watchdog: trigger recoverable crypto-erase when an
                 // external host connects via a data cable while the device is locked,
-                // duress-armed and verified-boot-green. See vendor/guardtalk/docs/
-                // SECURITY_USB_WATCHDOG_REPORT.md for the full MVP policy matrix.
+                // duress-armed and verified-boot yellow or green (DEC-REMEDIATE-002).
+                // See vendor/guardtalk/docs/USB_PROTECTION_POLICY.md.
                 maybeTriggerUsbDuressWipe(portStatus);
             }
         };
@@ -544,7 +544,8 @@ public class UsbPortSecurityHooks {
         return false;
     }
 
-    // Feature flag for the USB duress wipe watchdog (default: disabled, opt-in via prop).
+    // Feature flag for the USB duress wipe watchdog. Java default remains "0"
+    // so unset / userdebug stays opt-in. Komodo user product sets the prop to 1.
     // Allows remote A/B disabling of the feature without a rebuild.
     private static final String USB_DURESS_WIPE_ENABLED_PROP =
             "vendor.guardtalk.usb_duress_wipe.enabled";
@@ -553,27 +554,33 @@ public class UsbPortSecurityHooks {
      * USB data-cable duress watchdog. Triggers {@link DuressWipe#run} (recoverable
      * crypto-erase via {@code RecoverySystemService.deleteSecrets()} + lowLevelShutdown)
      * only when ALL of the following are true:
-     *   1. {@code vendor.guardtalk.usb_duress_wipe.enabled} == 1 (feature flag, opt-in)
+     *   1. {@code vendor.guardtalk.usb_duress_wipe.enabled} == 1
+     *      (Java default "0"; komodo {@code user} product default-enables)
      *   2. {@link #keyguardDismissedAtLeastOnce} (avoid firing during first-boot flow)
      *   3. keyguard currently showing (device locked)
      *   4. port is connected AND {@code data_role == DATA_ROLE_DEVICE}
      *      (an external host is connected over a data cable; HOST = phone is OTG host,
      *       NONE = charge-only cable — neither triggers the wipe)
      *   5. duress credentials are provisioned (DuressCredentials.maybeGet() != null)
-     *   6. {@code ro.boot.verifiedbootstate == "green"} (production-locked device only)
+     *   6. {@code ro.boot.verifiedbootstate} is {@code yellow} or {@code green}
+     *      (DEC-REMEDIATE-002: Pixel custom-key lock is yellow; green remains valid.
+     *       orange / red / empty do not fire)
      *
      * <p>The wipe is RECOVERABLE-BY-REFLASH: {@code DuressWipe} destroys the KeyMint
      * storage-encryption keys (making FBE data unrecoverable on this device) and then
      * shuts down. It does NOT issue a permanent hardware brick — reflash and the device
      * boots again with empty storage. See
      * vendor/guardtalk/docs/SECURITY_USB_WATCHDOG_REPORT.md for the threat model.
+     *
+     * <p>Does not change charging-only-when-locked (lock still kills ADB / data path).
+     * Lockscreen duress wipe remains {@code SecureWipeEngine.Reason.DURESS}.
      */
     private void maybeTriggerUsbDuressWipe(UsbPortStatus portStatus) {
         if (portStatus == null) {
             return;
         }
 
-        // Condition 1: feature flag must be explicitly enabled (default disabled).
+        // Condition 1: feature flag. Java default is disabled; user product sets 1.
         if (!isUsbDuressWipeEnabled()) {
             return;
         }
@@ -605,10 +612,11 @@ public class UsbPortSecurityHooks {
             return;
         }
 
-        // Condition 6: verified boot must be green — only enforce on a production-locked
-        // device. On an unlocked bootloader an attacker controls the boot chain, so
-        // triggering a wipe would be pointless self-DoS.
-        if (!isVerifiedBootGreen()) {
+        // Condition 6: production-locked verified boot (yellow or green). Unlocked
+        // (orange) and verification-failed (red) must not fire — attacker-controlled
+        // boot chain would make a wipe pointless self-DoS.
+        final String vbootState = getVerifiedBootState();
+        if (!isVerifiedBootYellowOrGreen(vbootState)) {
             return;
         }
 
@@ -616,13 +624,13 @@ public class UsbPortSecurityHooks {
         // land in pstore/last_kmsg before the low-level shutdown that DuressWipe
         // performs, so it is available for post-incident forensic analysis.
         Slog.w(TAG, "USB duress wipe triggered: dataRole=DEVICE, locked=true, "
-                + "duressArmed=true, vbootState=green");
+                + "duressArmed=true, vbootState=" + vbootState);
 
         DuressWipe.run(context);
     }
 
     private static boolean isUsbDuressWipeEnabled() {
-        // Default to disabled ("0" / unset) so the feature is opt-in.
+        // Default to disabled ("0" / unset). Komodo user product overrides to 1.
         return "1".equals(SystemProperties.get(USB_DURESS_WIPE_ENABLED_PROP, "0"));
     }
 
@@ -654,7 +662,16 @@ public class UsbPortSecurityHooks {
         }
     }
 
-    private static boolean isVerifiedBootGreen() {
-        return "green".equals(SystemProperties.get("ro.boot.verifiedbootstate", ""));
+    private static String getVerifiedBootState() {
+        return SystemProperties.get("ro.boot.verifiedbootstate", "");
+    }
+
+    /**
+     * Pixel custom-key lock reports {@code yellow}; OEM-embedded key reports
+     * {@code green}. Both count as verified for USB duress (DEC-REMEDIATE-002).
+     * {@code orange} (unlocked) and {@code red} (verify failed) do not.
+     */
+    private static boolean isVerifiedBootYellowOrGreen(String state) {
+        return "yellow".equals(state) || "green".equals(state);
     }
 }

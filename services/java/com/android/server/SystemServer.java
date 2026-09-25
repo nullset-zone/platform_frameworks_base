@@ -2380,18 +2380,39 @@ public final class SystemServer implements Dumpable {
             }
             t.traceEnd();
 
+            // GuardTalkOS (revised — supersedes the T-REMEDIATE-B2-LMS gate):
+            // LocationManagerService is started UNCONDITIONALLY. loc-excised.mk still drops
+            // FEATURE_LOCATION, but the *service* must nonetheless exist: system_server consumers
+            // call getSystemService(LocationManager.class) and dereference the result
+            // (TimeZoneDetector's ServiceConfigAccessorImpl, ContextHubService, TwilightService,
+            // DevicePolicyManagerService, WiFi, Connectivity, ...). Skipping the Lifecycle made
+            // that null and produced a whole class of boot-blocking NPEs.
+            // See .agent-comm/evidence/B6-NULL-LOCATIONMANAGER-BUG-CLASS.md.
+            // LMS tolerates absent hardware: GNSS is FEATURE_LOCATION-gated internally and the
+            // fused-provider path degrades gracefully.
             t.traceBegin("StartLocationManagerService");
-            mSystemServiceManager.startService(LocationManagerService.Lifecycle.class);
-            t.traceEnd();
-
-            t.traceBegin("StartCountryDetectorService");
             try {
-                countryDetector = new CountryDetectorService(context);
-                ServiceManager.addService(Context.COUNTRY_DETECTOR, countryDetector);
+                mSystemServiceManager.startService(LocationManagerService.Lifecycle.class);
             } catch (Throwable e) {
-                reportWtf("starting Country Detector", e);
+                // GuardTalkOS: a failure here must not abort boot outright; report and continue.
+                reportWtf("starting LocationManagerService service", e);
             }
             t.traceEnd();
+
+            // GuardTalkOS T-REMEDIATE-B2-LTZ: same FEATURE-gate as LMS/Bluetooth.
+            if (!context.getPackageManager().hasSystemFeature(
+                    PackageManager.FEATURE_LOCATION)) {
+                Slog.i(TAG, "No Country Detector Service (location hardware not present)");
+            } else {
+                t.traceBegin("StartCountryDetectorService");
+                try {
+                    countryDetector = new CountryDetectorService(context);
+                    ServiceManager.addService(Context.COUNTRY_DETECTOR, countryDetector);
+                } catch (Throwable e) {
+                    reportWtf("starting Country Detector", e);
+                }
+                t.traceEnd();
+            }
 
             t.traceBegin("StartTimeZoneDetectorService");
             try {
@@ -2409,13 +2430,19 @@ public final class SystemServer implements Dumpable {
             }
             t.traceEnd();
 
-            t.traceBegin("StartLocationTimeZoneManagerService");
-            try {
-                mSystemServiceManager.startService(LocationTimeZoneManagerService.Lifecycle.class);
-            } catch (Throwable e) {
-                reportWtf("starting LocationTimeZoneManagerService service", e);
+            // GuardTalkOS T-REMEDIATE-B2-LTZ: same FEATURE-gate as LMS/Bluetooth.
+            if (!context.getPackageManager().hasSystemFeature(
+                    PackageManager.FEATURE_LOCATION)) {
+                Slog.i(TAG, "No Location Time Zone Manager Service (location hardware not present)");
+            } else {
+                t.traceBegin("StartLocationTimeZoneManagerService");
+                try {
+                    mSystemServiceManager.startService(LocationTimeZoneManagerService.Lifecycle.class);
+                } catch (Throwable e) {
+                    reportWtf("starting LocationTimeZoneManagerService service", e);
+                }
+                t.traceEnd();
             }
-            t.traceEnd();
 
             if (context.getResources().getBoolean(R.bool.config_enableGnssTimeUpdateService)) {
                 t.traceBegin("StartGnssTimeUpdateService");

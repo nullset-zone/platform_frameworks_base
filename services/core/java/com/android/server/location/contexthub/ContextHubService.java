@@ -1711,10 +1711,32 @@ public class ContextHubService extends IContextHubService.Stub {
 
     /**
      * Obtains the latest location setting value and notifies the Context Hub.
+     *
+     * <p>GuardTalkOS: LocationManagerService is started only when
+     * FEATURE_LOCATION is present (SystemServer, T-REMEDIATE-B2-LMS). The
+     * location excision (vendor/guardtalk/feature-excised/loc-excised.mk)
+     * removes FEATURE_LOCATION, so getSystemService(LocationManager.class)
+     * returns null. ContextHubSystemService is gated independently on
+     * FEATURE_CONTEXT_HUB, which komodo still declares, so this code runs.
+     *
+     * <p>Before this guard, the null dereference threw from the async init
+     * task, failed ContextHubSystemService.onBootPhase(PHASE_SYSTEM_SERVICES_READY)
+     * and killed system_server in a loop: komodo stuck on the boot animation
+     * with init.svc.bootanim=running and sys.boot_completed unset
+     * (machine-captured, flash-capture-komodo-20260920-205523). With location
+     * excised, location is by definition never enabled, so report false
+     * rather than leaving the Hub without a value (Law 8 determinism).
      */
     private void sendLocationSettingUpdate() {
-        boolean enabled = mContext.getSystemService(LocationManager.class)
-                .isLocationEnabledForUser(UserHandle.CURRENT);
+        final LocationManager locationManager = mContext.getSystemService(LocationManager.class);
+        final boolean enabled;
+        if (locationManager == null) {
+            Log.i(TAG, "LocationManager absent (location feature excised) — "
+                    + "reporting location disabled to the Context Hub");
+            enabled = false;
+        } else {
+            enabled = locationManager.isLocationEnabledForUser(UserHandle.CURRENT);
+        }
         mContextHubWrapper.onLocationSettingChanged(enabled);
     }
 

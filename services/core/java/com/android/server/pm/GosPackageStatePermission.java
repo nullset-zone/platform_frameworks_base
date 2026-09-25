@@ -8,6 +8,7 @@ import android.os.Build;
 import android.os.UserHandle;
 import android.util.Slog;
 
+import com.android.internal.gmscompat.GmsCompatApp;
 import com.android.server.pm.pkg.PackageStateInternal;
 
 import java.lang.annotation.Retention;
@@ -157,6 +158,15 @@ class GosPackageStatePermission {
             PackageStateInternal psi = computer.getPackageStateInternal(pkgName);
             if (psi == null || !psi.isSystem()) {
                 String msg = pkgName + " is not a system package";
+                // T-REMEDIATE-B2-EXCISE: GmsCompat APKs are removed from the
+                // product. Wave-C kept them because IS_DEBUGGABLE threw here
+                // and killed system_server (tokay 2026-06-30). Tolerate the
+                // missing package on every variant so the userdebug sidecar
+                // does not boot-loop and user does not depend on the APK.
+                if (GmsCompatApp.PKG_NAME.equals(pkgName)) {
+                    Slog.w(TAG, msg + "; tolerated (GmsCompat excised)");
+                    return;
+                }
                 Slog.d(TAG, msg);
                 if (Build.IS_DEBUGGABLE) {
                     throw new IllegalStateException(msg);

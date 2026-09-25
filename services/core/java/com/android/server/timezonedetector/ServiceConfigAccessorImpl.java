@@ -112,8 +112,12 @@ public final class ServiceConfigAccessorImpl implements ServiceConfigAccessor {
     private final ContentResolver mCr;
     @NonNull
     private final UserManager mUserManager;
-    @NonNull
-    private final LocationManager mLocationManager;
+    // GuardTalkOS: deliberately NOT final. This singleton is first constructed from
+    // TimeZoneDetectorService.Lifecycle.onStart(), which SystemServer runs BEFORE
+    // StartLocationManagerService, so a ctor-time lookup can legitimately return null.
+    // Resolved lazily via getLocationManager() so we never latch onto null permanently.
+    @Nullable
+    private LocationManager mLocationManager;
 
     @GuardedBy("this")
     @NonNull
@@ -169,6 +173,8 @@ public final class ServiceConfigAccessorImpl implements ServiceConfigAccessor {
         mContext = Objects.requireNonNull(context);
         mCr = context.getContentResolver();
         mUserManager = context.getSystemService(UserManager.class);
+        // GuardTalkOS: opportunistic initial probe only. May be null when this singleton is
+        // created before LocationManagerService has registered; getLocationManager() retries.
         mLocationManager = context.getSystemService(LocationManager.class);
         mServerFlags = ServerFlags.getInstance(mContext);
 
@@ -385,8 +391,30 @@ public final class ServiceConfigAccessorImpl implements ServiceConfigAccessor {
         }
     }
 
+    /**
+     * Returns the {@link LocationManager}, or {@code null} when it cannot be obtained.
+     *
+     * <p>GuardTalkOS: the lookup is retried rather than cached from construction time, because
+     * this class is instantiated (as a singleton) before {@code LocationManagerService} has
+     * registered itself with the {@code ServiceManager}.
+     */
+    @Nullable
+    private synchronized LocationManager getLocationManager() {
+        if (mLocationManager == null) {
+            mLocationManager = mContext.getSystemService(LocationManager.class);
+        }
+        return mLocationManager;
+    }
+
     private boolean getLocationEnabledSetting(@UserIdInt int userId) {
-        return mLocationManager.isLocationEnabledForUser(UserHandle.of(userId));
+        final LocationManager locationManager = getLocationManager();
+        if (locationManager == null) {
+            // Location hardware is excised (FEATURE_LOCATION absent), or the service is not
+            // registered yet. Report location as disabled instead of throwing an NPE that
+            // would abort system_server boot.
+            return false;
+        }
+        return locationManager.isLocationEnabledForUser(UserHandle.of(userId));
     }
 
     private boolean isUserConfigAllowed(@UserIdInt int userId) {

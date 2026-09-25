@@ -1897,21 +1897,14 @@ class ActivityClientController extends IActivityClientController.Stub {
         if (r != rootActivity && !isRelativeTaskRootActivity(r, rootActivity)) {
             return false;
         }
-        final boolean isBaseActivity = rootActivity.mActivityComponent.equals(
-                r.getTask().realActivity);
-        final Intent baseActivityIntent = isBaseActivity ? rootActivity.intent : null;
-
-        // If the activity was launched directly from the home screen, then we should
-        // refrain from finishing the activity and instead move it to the back to keep it in
-        // memory. The requirements for this are:
-        //   1. The activity is the last running activity in the task.
-        //   2. The current activity is the base activity for the task.
-        //   3. The activity was launched by the home process, and is one of the main entry
-        //      points for the application.
-        return baseActivityIntent != null
-                && isTopActivityInTaskFragment(r)
-                && rootActivity.isLaunchSourceType(ActivityRecord.LAUNCH_SOURCE_TYPE_HOME)
-                && ActivityRecord.isMainIntent(baseActivityIntent);
+        if (!isTopActivityInTaskFragment(r)) {
+            return false;
+        }
+        // T-OS-BACK-NAV / DEC-OS-UX-001: last activity in the task must go to
+        // home/recents via moveTaskToBack. Finishing here can kill the process
+        // before home is shown. HOME+MAIN remains a sufficient historical
+        // condition; it is implied by "last in task" for typical launcher starts.
+        return true;
     }
 
     @Override

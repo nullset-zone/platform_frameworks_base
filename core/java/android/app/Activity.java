@@ -1932,8 +1932,11 @@ public class Activity extends ContextThemeWrapper
         boolean aheadOfTimeBack = WindowOnBackInvokedDispatcher
                 .isOnBackInvokedCallbackEnabled(this);
         if (aheadOfTimeBack) {
-            // Add onBackPressed as default back behavior.
-            mDefaultBackCallback = this::onBackInvoked;
+            // System-priority fallback: pop the in-app fragment stack first, then
+            // finish / move-task-to-back. App OnBackInvokedCallbacks at DEFAULT+
+            // still win. Using onBackInvoked here skipped FragmentManager pops and
+            // looked like a no-op or an early process kill (T-OS-BACK-NAV).
+            mDefaultBackCallback = this::onBackPressed;
             getOnBackInvokedDispatcher().registerSystemOnBackInvokedCallback(mDefaultBackCallback);
         }
         if (predictiveBackStopKeycodeBackForwarding()) {

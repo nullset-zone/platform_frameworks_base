@@ -844,9 +844,13 @@ public final class SensorPrivacyService extends SystemService {
             enforceValidCallingUser(userId);
 
             if (!canChangeToggleSensorPrivacy(userId, sensor)) {
+                Log.i(TAG, "Dropping setToggleSensorPrivacy: canChangeToggleSensorPrivacy=false"
+                        + " userId=" + userId + " sensor=" + sensor + " enable=" + enable);
                 return;
             }
             if (mGuardTalkHooks != null && !mGuardTalkHooks.allowToggleChange(userId, enable)) {
+                Log.i(TAG, "Dropping setToggleSensorPrivacy: GuardTalk allowToggleChange=false"
+                        + " userId=" + userId + " sensor=" + sensor + " enablePrivacy=" + enable);
                 return;
             }
             if (enable && !supportsSensorToggle(TOGGLE_TYPE_SOFTWARE, sensor)) {
@@ -881,11 +885,15 @@ public final class SensorPrivacyService extends SystemService {
             enforceValidCallingUser(userId);
 
             if (!canChangeToggleSensorPrivacy(userId, sensor)) {
+                Log.i(TAG, "Dropping setToggleSensorPrivacyState: canChangeToggleSensorPrivacy=false"
+                        + " userId=" + userId + " sensor=" + sensor + " state=" + state);
                 return;
             }
             // DISABLED = sensors ON; reject while GuardTalk force-deny applies.
             if (mGuardTalkHooks != null
                     && !mGuardTalkHooks.allowToggleChange(userId, state != DISABLED)) {
+                Log.i(TAG, "Dropping setToggleSensorPrivacyState: GuardTalk allowToggleChange=false"
+                        + " userId=" + userId + " sensor=" + sensor + " state=" + state);
                 return;
             }
             if (!supportsSensorToggle(TOGGLE_TYPE_SOFTWARE, sensor)) {
@@ -1116,8 +1124,14 @@ public final class SensorPrivacyService extends SystemService {
 
             if (requiresAuthentication() && mKeyguardManager != null
                     && mKeyguardManager.isDeviceLocked(userId)) {
-                Log.i(TAG, "Can't change mic/cam toggle while device is locked");
-                return false;
+                // DEC-OS-UX-001: AOSP rejects ALL toggle changes while isDeviceLocked,
+                // including privacy ON (camera/mic off). GuardTalk owns that lock
+                // decision via allowToggleChange: privacy-ON always persists;
+                // privacy-OFF is rejected only while locked/pre-unlock/lockdown.
+                if (mGuardTalkHooks == null || !mGuardTalkHooks.ownsLockToggleAuthority()) {
+                    Log.i(TAG, "Can't change mic/cam toggle while device is locked");
+                    return false;
+                }
             }
 
             if (sensor == MICROPHONE && mUserManagerInternal.getUserRestriction(userId,
@@ -1639,6 +1653,10 @@ public final class SensorPrivacyService extends SystemService {
                 } else {
                     pw.println("SENSOR PRIVACY MANAGER STATE (dumpsys "
                             + Context.SENSOR_PRIVACY_SERVICE + ")");
+
+                    if (mGuardTalkHooks != null) {
+                        mGuardTalkHooks.dump(new IndentingPrintWriter(pw, "  "));
+                    }
 
                     mSensorPrivacyStateController.dump(
                             new DualDumpOutputStream(new IndentingPrintWriter(pw, "  ")));

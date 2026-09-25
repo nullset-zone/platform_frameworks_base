@@ -28,16 +28,22 @@ import android.os.Handler;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.provider.Settings;
+import android.util.IndentingPrintWriter;
 import android.util.Slog;
 
 import com.android.internal.widget.LockPatternUtils;
 
 /**
- * Fail-closed GuardTalk hooks for {@link SensorPrivacyService} (T-SEC-P2-SENSOR).
+ * Fail-closed GuardTalk hooks for {@link SensorPrivacyService}
+ * (T-SEC-P2-SENSOR / T-OS-CAMMIC-TOGGLE).
  *
- * <p>Forces mic/camera AppOps restrictions when locked / pre-first-unlock, and
- * applies lockdown sensor + network fail-closed. Persisted QS/toggle state is
- * left unchanged so preference restores after unlock.
+ * <p>Forces mic/camera AppOps restrictions when the lock screen is showing /
+ * pre-first-unlock, and applies lockdown sensor + network fail-closed. Persisted
+ * QS/toggle state is left unchanged so preference restores after unlock.
+ *
+ * <p>DEC-OS-UX-001: user toggle while interactively unlocked is split from
+ * locked/lockdown fail-closed. Privacy-ON (camera/mic off) always persists;
+ * privacy-OFF is rejected only while {@link #mustDenySensors} applies.
  *
  * <p>Does <em>not</em> register a Lockdown Quick Settings tile (Phase 3).
  */
@@ -135,19 +141,25 @@ final class GuardTalkSensorPrivacyHooks {
         }
     }
 
+    /**
+     * True when GuardTalk owns lock/lockdown toggle authority (DEC-OS-UX-001).
+     *
+     * <p>When true, AOSP {@code canChangeToggleSensorPrivacy} must not drop
+     * privacy-ON while {@code isDeviceLocked} — that made Settings camera/mic
+     * off a no-op. Emergency-call and admin DISALLOW_*_TOGGLE still apply.
+     */
+    boolean ownsLockToggleAuthority() {
+        return GuardTalkSensorPrivacyPolicy.isSensorPrivacyWhenLockedEnabled()
+                || GuardTalkSensorPrivacyPolicy.isLockdownFailClosedEnabled();
+    }
+
     /** True when mic/camera must be AppOps-restricted for {@code userId}. */
     boolean mustDenySensors(int userId) {
+        final boolean keyguardShowing = isKeyguardShowing();
         final boolean deviceLocked = isDeviceLocked(userId);
         final boolean userUnlocked = isUserUnlocked(userId);
-        int flags = mStrongAuthFlags;
-        if (userId != mCurrentUserId) {
-            try {
-                flags = mStrongAuthTracker.getStrongAuthForUser(userId);
-            } catch (Exception e) {
-                flags = 0;
-            }
-        }
-        return GuardTalkSensorPrivacyPolicy.mustDenySensors(deviceLocked, userUnlocked, flags);
+        return GuardTalkSensorPrivacyPolicy.mustDenySensors(
+                keyguardShowing, deviceLocked, userUnlocked, strongAuthFlagsFor(userId));
     }
 
     /**
@@ -162,19 +174,67 @@ final class GuardTalkSensorPrivacyHooks {
     /**
      * Reject attempts to disable sensor privacy (sensors ON) while force-deny applies.
      *
+     * <p>Privacy ON (camera/mic off) always persists. Privacy OFF is allowed
+     * only when the user is interactively unlocked and not in lockdown.
+     *
      * @param enablePrivacy true = privacy ON (sensors muted)
      * @return true if the change is allowed
      */
     boolean allowToggleChange(int userId, boolean enablePrivacy) {
-        if (enablePrivacy) {
-            return true;
-        }
-        if (mustDenySensors(userId)) {
+        final boolean keyguardShowing = isKeyguardShowing();
+        final boolean deviceLocked = isDeviceLocked(userId);
+        final boolean userUnlocked = isUserUnlocked(userId);
+        final int flags = strongAuthFlagsFor(userId);
+        final boolean allowed = GuardTalkSensorPrivacyPolicy.allowUserToggle(
+                enablePrivacy, keyguardShowing, deviceLocked, userUnlocked, flags);
+        if (!allowed) {
             Slog.i(TAG, "Reject sensor privacy disable while locked/pre-unlock/lockdown"
-                    + " (fail-closed)");
-            return false;
+                    + " (fail-closed)"
+                    + " keyguardShowing=" + keyguardShowing
+                    + " deviceLocked=" + deviceLocked
+                    + " userUnlocked=" + userUnlocked
+                    + " lockdown=" + GuardTalkSensorPrivacyPolicy.isLockdownActive(flags));
         }
-        return true;
+        return allowed;
+    }
+
+    void dump(IndentingPrintWriter pw) {
+        final int userId = mCurrentUserId;
+        final boolean keyguardShowing = isKeyguardShowing();
+        final boolean deviceLocked = isDeviceLocked(userId);
+        final boolean userUnlocked = isUserUnlocked(userId);
+        final int flags = strongAuthFlagsFor(userId);
+        pw.println("GuardTalk sensor privacy (DEC-OS-UX-001):");
+        pw.increaseIndent();
+        pw.println("policyWhenLocked="
+                + GuardTalkSensorPrivacyPolicy.isSensorPrivacyWhenLockedEnabled());
+        pw.println("lockdownFailClosed="
+                + GuardTalkSensorPrivacyPolicy.isLockdownFailClosedEnabled());
+        pw.println("ownsLockToggleAuthority=" + ownsLockToggleAuthority());
+        pw.println("userId=" + userId);
+        pw.println("keyguardShowing=" + keyguardShowing);
+        pw.println("deviceLocked=" + deviceLocked);
+        pw.println("userUnlocked=" + userUnlocked);
+        pw.println("lockdown=" + GuardTalkSensorPrivacyPolicy.isLockdownActive(flags));
+        pw.println("mustDenySensors=" + GuardTalkSensorPrivacyPolicy.mustDenySensors(
+                keyguardShowing, deviceLocked, userUnlocked, flags));
+        pw.println("allowPrivacyOn=" + GuardTalkSensorPrivacyPolicy.allowUserToggle(
+                true, keyguardShowing, deviceLocked, userUnlocked, flags));
+        pw.println("allowPrivacyOff=" + GuardTalkSensorPrivacyPolicy.allowUserToggle(
+                false, keyguardShowing, deviceLocked, userUnlocked, flags));
+        pw.decreaseIndent();
+    }
+
+    private int strongAuthFlagsFor(int userId) {
+        int flags = mStrongAuthFlags;
+        if (userId != mCurrentUserId) {
+            try {
+                flags = mStrongAuthTracker.getStrongAuthForUser(userId);
+            } catch (Exception e) {
+                flags = 0;
+            }
+        }
+        return flags;
     }
 
     private void onStrongAuthChanged(int userId) {
@@ -228,6 +288,21 @@ final class GuardTalkSensorPrivacyHooks {
             mNetworkLockdownActive = lockdown;
         } finally {
             Binder.restoreCallingIdentity(token);
+        }
+    }
+
+    private boolean isKeyguardShowing() {
+        if (mKeyguardManager == null) {
+            mKeyguardManager = mContext.getSystemService(KeyguardManager.class);
+        }
+        if (mKeyguardManager == null) {
+            // Fail-closed when policy on and keyguard unavailable.
+            return GuardTalkSensorPrivacyPolicy.isSensorPrivacyWhenLockedEnabled();
+        }
+        try {
+            return mKeyguardManager.isKeyguardLocked();
+        } catch (Exception e) {
+            return true;
         }
     }
 

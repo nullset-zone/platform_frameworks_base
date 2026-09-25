@@ -110,7 +110,6 @@ import android.credentials.CredentialManager;
 import android.credentials.ICredentialManager;
 import android.debug.AdbManager;
 import android.debug.IAdbManager;
-import android.devicelock.DeviceLockFrameworkInitializer;
 import android.graphics.fonts.FontManager;
 import android.hardware.ConsumerIrManager;
 import android.hardware.ISensorPrivacyManager;
@@ -1996,7 +1995,11 @@ public final class SystemServiceRegistry {
             NearbyFrameworkInitializer.registerServiceWrappers();
             OnDevicePersonalizationFrameworkInitializer.registerServiceWrappers();
             OnDeviceIntelligenceFrameworkInitializer.registerServiceWrappers();
-            DeviceLockFrameworkInitializer.registerServiceWrappers();
+            // GuardTalk: no CONSTANT_Class for DeviceLockFrameworkInitializer.
+            // A hard invoke (even in try/catch) can fail SystemServiceRegistry
+            // <clinit> when the APEX is excised — zygote then dies and userdebug
+            // init reboots to bootloader.
+            registerDeviceLockServiceWrappersIfPresent();
             VirtualizationFrameworkInitializer.registerServiceWrappers();
             ConnectivityFrameworkInitializerBaklava.registerServiceWrappers();
 
@@ -2032,6 +2035,24 @@ public final class SystemServiceRegistry {
             // If any of the above code throws, we're in a pretty bad shape and the process
             // will likely crash, but we'll reset it just in case there's an exception handler...
             sInitializing = false;
+        }
+    }
+
+    /**
+     * Register DeviceLock service wrappers only if the APEX BCP class exists.
+     * Reflection keeps {@link SystemServiceRegistry} loadable when
+     * {@code com.android.devicelock} is PRODUCT_PACKAGES-excised.
+     */
+    private static void registerDeviceLockServiceWrappersIfPresent() {
+        try {
+            Class<?> initializer = Class.forName(
+                    "android.devicelock.DeviceLockFrameworkInitializer");
+            initializer.getMethod("registerServiceWrappers").invoke(null);
+        } catch (ClassNotFoundException | NoClassDefFoundError e) {
+            Slog.w(TAG, "DeviceLock APEX absent — skip "
+                    + "DeviceLockFrameworkInitializer.registerServiceWrappers()");
+        } catch (ReflectiveOperationException e) {
+            Slog.w(TAG, "DeviceLockFrameworkInitializer.registerServiceWrappers failed", e);
         }
     }
 

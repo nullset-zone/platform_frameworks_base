@@ -64,6 +64,7 @@ public class LockSettingsServiceTestable extends LockSettingsService {
         Runnable mInvalidateLockoutEndTimeCacheMock;
 
         public boolean mIsHeadlessSystemUserMode = false;
+        public final DuressPasswordHelper mDuressPasswordHelper = mock(DuressPasswordHelper.class);
 
         public MockInjector(
                 Context context,
@@ -182,7 +183,7 @@ public class LockSettingsServiceTestable extends LockSettingsService {
         public DuressPasswordHelper getDuressPasswordHelper(LockSettingsService lockSettingsService,
                 LockSettingsStorage lockSettingsStorage,
                 SyntheticPasswordManager syntheticPasswordManager) {
-            return mock(DuressPasswordHelper.class);
+            return mDuressPasswordHelper;
         }
 
         @Override

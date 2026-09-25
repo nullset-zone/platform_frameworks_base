@@ -456,11 +456,24 @@ public class LocationManagerService extends ILocationManager.Stub implements
             Log.w(TAG, "no network location provider found");
         }
 
-        // ensure that a fused provider exists which will work in direct boot
-        Preconditions.checkState(!mContext.getPackageManager().queryIntentServicesAsUser(
-                new Intent(ACTION_FUSED_PROVIDER),
-                MATCH_DIRECT_BOOT_AWARE | MATCH_SYSTEM_ONLY, UserHandle.USER_SYSTEM).isEmpty(),
-                "Unable to find a direct boot aware fused location provider");
+        // GuardTalkOS: a direct-boot-aware fused provider is normally mandatory here, but
+        // loc-excised.mk removes the FusedLocation APK (so FEATURE_LOCATION can be absent).
+        // Hard-failing forced SystemServer to skip LocationManagerService entirely, which made
+        // getSystemService(LocationManager.class) return null for every system_server consumer
+        // and produced a whole class of boot-blocking NPEs (ContextHubService,
+        // ServiceConfigAccessorImpl, TwilightService, ...). The class is otherwise already
+        // location-feature aware: GNSS below is gated on FEATURE_LOCATION, and the fused branch
+        // immediately below this check already tolerates a null provider. Downgrade to a warning
+        // so the service starts and the LocationManager contract holds framework-wide.
+        final boolean hasDirectBootAwareFusedProvider =
+                !mContext.getPackageManager().queryIntentServicesAsUser(
+                        new Intent(ACTION_FUSED_PROVIDER),
+                        MATCH_DIRECT_BOOT_AWARE | MATCH_SYSTEM_ONLY, UserHandle.USER_SYSTEM)
+                        .isEmpty();
+        if (!hasDirectBootAwareFusedProvider) {
+            Log.wtf(TAG, "No direct boot aware fused location provider found; continuing "
+                    + "without one (location hardware excised)");
+        }
 
         ProxyLocationProvider fusedProvider = ProxyLocationProvider.create(
                 mContext,

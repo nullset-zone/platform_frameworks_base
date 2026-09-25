@@ -720,8 +720,11 @@ public class WindowOnBackInvokedDispatcher implements OnBackInvokedDispatcher {
                     return;
                 }
                 if (callback instanceof OnBackAnimationCallback && !isInProgress) {
-                    Log.w(TAG, "ProgressAnimator was not in progress, skip onBackInvoked().");
-                    return;
+                    // KEYCODE_BACK / 3-button / a committed gesture that never received
+                    // onBackStarted must still invoke. Skipping made back a no-op
+                    // (T-OS-BACK-NAV).
+                    Log.w(TAG, "ProgressAnimator was not in progress, "
+                            + "dispatching onBackInvoked without animation.");
                 }
                 mProgressAnimator.reset();
                 WindowOnBackInvokedDispatcher.this.onBackInvoked(callback);

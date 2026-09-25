@@ -2139,6 +2139,9 @@ public class LockSettingsService extends ILockSettings.Stub {
                     } else {
                         Slog.w(TAG, "Failed to enroll: incorrect credential.");
                     }
+                    // Binder setLockCredential verifies savedCredential without
+                    // doVerifyCredential. Still run the duress helper (item 6).
+                    duressPasswordHelper.onVerifyCredentialResult(response, savedCredential);
                     return false;
                 }
 
@@ -2555,6 +2558,14 @@ public class LockSettingsService extends ILockSettings.Stub {
 
     /**
      * Verify user credential and unlock the user.
+     *
+     * <p>GuardTalk (T-REMEDIATE-B1-DURESS): every Binder LSKF check/verify must funnel
+     * through this method. {@link DuressPasswordHelper#onVerifyCredentialResult} runs in
+     * {@code finally} and may invoke {@link SecureWipeEngine} with
+     * {@link SecureWipeEngine.Reason#DURESS}. Do not add a parallel LSKF verify path for
+     * {@link #checkCredential}, {@link #verifyCredential}, or
+     * {@link #verifyTiedProfileChallenge}.
+     *
      * @param credential User's lockscreen credential
      * @param lockDomain Whether to verify the primary or biometric second factor
      * @param userId User to verify the credential for
@@ -3660,7 +3671,14 @@ public class LockSettingsService extends ILockSettings.Stub {
     public byte[] getHashFactor(LockscreenCredential currentCredential, int userId) {
         checkPasswordReadPermission();
         try {
-            return getHashFactorInternal(currentCredential, userId);
+            final byte[] factor = getHashFactorInternal(currentCredential, userId);
+            if (factor == null) {
+                // Binder getHashFactor verifies currentCredential without
+                // doVerifyCredential. Still run the duress helper (item 6).
+                duressPasswordHelper.onVerifyCredentialResult(
+                        VerifyCredentialResponse.OTHER_ERROR, currentCredential);
+            }
+            return factor;
         } finally {
             LockscreenCredential.zeroizeIfFromParcel(currentCredential);
         }

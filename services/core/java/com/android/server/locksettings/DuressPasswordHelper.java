@@ -34,6 +34,12 @@ public class DuressPasswordHelper {
         this.spManager = spManager;
     }
 
+    /**
+     * Invoked from {@link LockSettingsService#doVerifyCredential} {@code finally} and from
+     * Binder LSKF paths that cannot reuse that funnel ({@code setLockCredential} enroll
+     * failure, {@code getHashFactor} miss). Lockscreen wipe remains
+     * {@link SecureWipeEngine.Reason#DURESS}; this method must not change that reason.
+     */
     protected void onVerifyCredentialResult(@Nullable VerifyCredentialResponse res, @Nullable LockscreenCredential credential) {
         if (res != null && res.isMatched()) {
             return;

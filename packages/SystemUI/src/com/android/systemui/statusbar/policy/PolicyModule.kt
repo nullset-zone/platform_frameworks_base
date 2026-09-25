@@ -512,13 +512,13 @@ interface PolicyModule {
     @StringKey(LocationTile.TILE_SPEC)
     fun bindLocationTile(locationTile: LocationTile): QSTileImpl<*>
 
-    /** Inject CameraToggleTile into tileMap in QSModule */
+    /** Inject CameraToggleTile into tileMap in QSModule (spec cameratoggle). */
     @Binds
     @IntoMap
     @StringKey(CameraToggleTile.TILE_SPEC)
     fun bindCameraToggleTile(cameraToggleTile: CameraToggleTile): QSTileImpl<*>
 
-    /** Inject MicrophoneToggleTile into tileMap in QSModule */
+    /** Inject MicrophoneToggleTile into tileMap in QSModule (spec mictoggle). */
     @Binds
     @IntoMap
     @StringKey(MicrophoneToggleTile.TILE_SPEC)

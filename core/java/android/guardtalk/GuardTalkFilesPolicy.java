@@ -30,6 +30,10 @@ import java.io.File;
  *   <li>ZIP compress remains available via stock DocumentsUI CompressJob</li>
  * </ul>
  *
+ * <p>This class does <strong>not</strong> restrict ACTION_VIEW MIME resolution.
+ * User-storage image/video open is provided by in-tree handlers (HTMLViewer for
+ * jpeg/png/webp, UniversalMediaPlayer for mp4/webm). See T-OS-FILES-MEDIA.
+ *
  * <p>See {@code vendor/guardtalk/docs/FILES_HANDLERS_POLICY.md}.
  *
  * @hide
