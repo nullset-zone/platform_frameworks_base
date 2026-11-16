@@ -420,44 +420,9 @@ final class DefaultPermissionGrantPolicy {
         grantDefaultSystemHandlerPermissions(pm, userId);
         grantSignatureAppsNotificationPermissions(pm, userId);
         grantDefaultPermissionExceptions(pm, userId);
-        // GuardTalk T-SEC-P4-PERMS: Messenger product grants (no-op if APK absent).
-        grantGuardTalkMessengerDefaultPermissions(pm, userId);
 
         // Apply delayed state
         pm.apply();
-    }
-
-    /**
-     * Grant GuardTalk Messenger the product default runtime permission set when
-     * {@link GuardTalkPermissionDefaultsPolicy} is enabled and the package is
-     * installed. Uses ignore-system so grants apply whether Messenger lands as
-     * a system/priv-app or a product/user package.
-     */
-    private void grantGuardTalkMessengerDefaultPermissions(
-            PackageManagerWrapper pm, int userId) {
-        if (!GuardTalkPermissionDefaultsPolicy.isEnabled()) {
-            return;
-        }
-        final String packageName = GuardTalkPermissionDefaultsPolicy.MESSENGER_PACKAGE_NAME;
-        final PackageInfo pkg = pm.getPackageInfo(packageName);
-        if (pkg == null) {
-            Log.i(TAG, "GuardTalk Messenger not installed (" + packageName
-                    + "); skipping product default grants");
-            return;
-        }
-        if (!doesPackageSupportRuntimePermissions(pkg)) {
-            Log.w(TAG, "GuardTalk Messenger does not support runtime permissions; skip");
-            return;
-        }
-        Log.i(TAG, "Granting GuardTalk Messenger default permissions to " + packageName
-                + " for user " + userId);
-        final Set<String> messengerPerms =
-                GuardTalkPermissionDefaultsPolicy.getMessengerRuntimePermissions();
-        grantPermissionsToPackage(pm, pkg, userId,
-                false /* systemFixed */,
-                true /* ignoreSystemPackage */,
-                true /* whitelistRestrictedPermissions */,
-                messengerPerms);
     }
 
     private void grantSignatureAppsNotificationPermissions(PackageManagerWrapper pm, int userId) {
