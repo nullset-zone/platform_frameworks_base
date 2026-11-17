@@ -1634,11 +1634,13 @@ public final class SystemServer implements Dumpable {
                 t.traceEnd();
             }
 
-            t.traceBegin("StartTelephonyRegistry");
-            telephonyRegistry = new TelephonyRegistry(
-                    context, new TelephonyRegistry.ConfigurationProvider());
-            ServiceManager.addService("telephony.registry", telephonyRegistry);
-            t.traceEnd();
+            if (!SystemProperties.getBoolean("ro.guardtalk.radio.excised", false)) {
+                t.traceBegin("StartTelephonyRegistry");
+                telephonyRegistry = new TelephonyRegistry(
+                        context, new TelephonyRegistry.ConfigurationProvider());
+                ServiceManager.addService("telephony.registry", telephonyRegistry);
+                t.traceEnd();
+            }
 
             t.traceBegin("StartEntropyMixer");
             mEntropyMixer = new EntropyMixer(context);
@@ -2422,13 +2424,15 @@ public final class SystemServer implements Dumpable {
             }
             t.traceEnd();
 
-            t.traceBegin("StartAltitudeService");
-            try {
-                mSystemServiceManager.startService(AltitudeService.Lifecycle.class);
-            } catch (Throwable e) {
-                reportWtf("starting AltitudeService service", e);
+            if (!SystemProperties.getBoolean("ro.guardtalk.radio.excised", false)) {
+                t.traceBegin("StartAltitudeService");
+                try {
+                    mSystemServiceManager.startService(AltitudeService.Lifecycle.class);
+                } catch (Throwable e) {
+                    reportWtf("starting AltitudeService service", e);
+                }
+                t.traceEnd();
             }
-            t.traceEnd();
 
             // GuardTalkOS T-REMEDIATE-B2-LTZ: same FEATURE-gate as LMS/Bluetooth.
             if (!context.getPackageManager().hasSystemFeature(
@@ -2639,7 +2643,8 @@ public final class SystemServer implements Dumpable {
             mSystemServiceManager.startService(SensorNotificationService.class);
             t.traceEnd();
 
-            if (mPackageManager.hasSystemFeature(PackageManager.FEATURE_CONTEXT_HUB)) {
+            if (!SystemProperties.getBoolean("ro.guardtalk.radio.excised", false)
+                    && mPackageManager.hasSystemFeature(PackageManager.FEATURE_CONTEXT_HUB)) {
                 t.traceBegin("StartContextHubSystemService");
                 mSystemServiceManager.startService(ContextHubSystemService.class);
                 t.traceEnd();
@@ -3026,9 +3031,10 @@ public final class SystemServer implements Dumpable {
         t.traceEnd();
 
         // AdServicesManagerService (PP API service)
-        if (!isWatch || !android.server.Flags.removeAdServicesManagerServiceFromWear()
-                || SystemProperties.getBoolean("ro.system_settings.service.adservices_enabled",
-                true)) {
+        if (!SystemProperties.getBoolean("ro.guardtalk.radio.excised", false)
+                && (!isWatch || !android.server.Flags.removeAdServicesManagerServiceFromWear()
+                        || SystemProperties.getBoolean("ro.system_settings.service.adservices_enabled",
+                        true))) {
             t.traceBegin("StartAdServicesManagerService");
             try {
                 mSystemServiceManager.startService(AD_SERVICES_MANAGER_SERVICE_CLASS);
@@ -3040,7 +3046,8 @@ public final class SystemServer implements Dumpable {
         }
 
         // OnDevicePersonalizationSystemService
-        if (SystemProperties.getBoolean("ro.system_settings.service.odp_enabled", true)) {
+        if (!SystemProperties.getBoolean("ro.guardtalk.radio.excised", false)
+                && SystemProperties.getBoolean("ro.system_settings.service.odp_enabled", true)) {
             t.traceBegin("StartOnDevicePersonalizationSystemService");
             mSystemServiceManager.startService(ON_DEVICE_PERSONALIZATION_SYSTEM_SERVICE_CLASS);
             t.traceEnd();
@@ -3300,13 +3307,15 @@ public final class SystemServer implements Dumpable {
             Slog.d(TAG, "Not starting GameManagerService");
         }
 
-        if (context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_UWB)) {
+        if (!SystemProperties.getBoolean("ro.guardtalk.radio.excised", false)
+                && context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_UWB)) {
             t.traceBegin("UwbService");
             mSystemServiceManager.startServiceFromJar(UWB_SERVICE_CLASS, UWB_APEX_SERVICE_JAR_PATH);
             t.traceEnd();
         }
 
-        if (com.android.ranging.flags.Flags.rangingStackEnabled()) {
+        if (!SystemProperties.getBoolean("ro.guardtalk.radio.excised", false)
+                && com.android.ranging.flags.Flags.rangingStackEnabled()) {
             if (context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_UWB)
                     || context.getPackageManager().hasSystemFeature(
                             PackageManager.FEATURE_WIFI_AWARE)
